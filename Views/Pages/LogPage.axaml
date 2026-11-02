@@ -135,31 +135,31 @@
                 Background="{DynamicResource CardBackgroundStrong}"
                 BorderBrush="{DynamicResource BorderColor}"
                 BorderThickness="1"
-                CornerRadius="22"
-                Margin="30,30,30,0"
-                Padding="22,18"
+                CornerRadius="20"
+                Margin="20,20,20,0"
+                Padding="18,14"
                 BoxShadow="0 12 36 0 #14E84D9C">
             <Grid ColumnDefinitions="Auto,*,Auto">
-                <Border Width="52" Height="52"
-                        CornerRadius="16"
+                <Border Width="44" Height="44"
+                        CornerRadius="14"
                         Background="{DynamicResource PrimaryBrushSoft}"
                         VerticalAlignment="Center"
                         Margin="0,0,16,0">
-                    <PathIcon Data="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 1v5h5M16 13H8M16 17H8M10 9H8"
-                              Width="30" Height="30"
+                    <PathIcon Data="M20 4H4c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10zm-2-1h-6v-2h6v2zM7.5 17l-1.41-1.41L8.67 13l-2.59-2.59L7.5 9l4 4-4 4z"
+                              Width="24" Height="24"
                               Foreground="{DynamicResource PrimaryBrush}"
                               HorizontalAlignment="Center"
                               VerticalAlignment="Center"/>
                 </Border>
 
                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                    <TextBlock Text="日志查看器"
-                               FontSize="32"
+                    <TextBlock Text="{Binding Title}"
+                               FontSize="22"
                                FontWeight="Bold"
                                Foreground="{DynamicResource TextPrimary}"/>
-                    <TextBlock Text="实时查看运行日志、复制选中内容或清空历史记录"
-                               Margin="0,4,0,0"
-                               FontSize="13"
+                    <TextBlock Text="这个实例进程的终端输出 (stdout / stderr)，可复制选中内容或清空"
+                               Margin="0,3,0,0"
+                               FontSize="12"
                                Foreground="{DynamicResource TextSecondary}"/>
                 </StackPanel>
 
@@ -194,7 +194,7 @@
         </Border>
 
         <Border Background="{DynamicResource CardBackground}"
-                Margin="30,18,30,30"
+                Margin="20,14,20,20"
                 CornerRadius="20"
                 BorderThickness="1"
                 BorderBrush="{DynamicResource BorderColor}"

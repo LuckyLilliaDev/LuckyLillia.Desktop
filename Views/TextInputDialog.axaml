@@ -116,16 +116,25 @@
                      FontSize="14"
                      Padding="14,11"/>
 
-            <Button x:Name="OkButton"
-                    Content="确定"
-                    Width="132"
-                    Padding="0,11"
-                    Classes="ActionButton"
-                    Background="{DynamicResource PrimaryBrush}"
-                    Foreground="White"
-                    HorizontalAlignment="Center"
-                    HorizontalContentAlignment="Center"
-                    Click="OnOkClick"/>
+            <StackPanel Orientation="Horizontal"
+                        Spacing="12"
+                        HorizontalAlignment="Center">
+                <Button x:Name="OkButton"
+                        Content="确定"
+                        Width="120"
+                        Padding="0,11"
+                        Classes="ActionButton"
+                        Background="{DynamicResource PrimaryBrush}"
+                        Foreground="White"
+                        HorizontalContentAlignment="Center"
+                        Click="OnOkClick"/>
+                <Button x:Name="CancelButton"
+                        Content="取消"
+                        Width="120"
+                        Padding="0,11"
+                        HorizontalContentAlignment="Center"
+                        Click="OnCancelClick"/>
+            </StackPanel>
         </StackPanel>
     </Border>
 </Window>

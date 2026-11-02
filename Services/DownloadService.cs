@@ -39,12 +39,9 @@ public class AppUpdateResult
 /// </summary>
 public interface IDownloadService
 {
-    Task<bool> DownloadPmhqAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default);
-    Task<bool> DownloadPmhqAsync(string version, IProgress<DownloadProgress>? progress = null, CancellationToken ct = default);
     Task<bool> DownloadLLBotAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default);
     Task<bool> DownloadNodeAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default);
     Task<bool> DownloadFFmpegAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default);
-    Task<bool> DownloadQQAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default);
     Task<AppUpdateResult> DownloadAppUpdateAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default);
     bool CheckFileExists(string path);
     string? FindInPath(string executable);
@@ -99,30 +96,6 @@ public class DownloadService : IDownloadService
         return null;
     }
 
-    public async Task<bool> DownloadPmhqAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default)
-    {
-        _logger.LogInformation("开始下载 PMHQ...");
-        return await DownloadAndExtractAsync(
-            Constants.NpmPackages.Pmhq,
-            Constants.DefaultPaths.PmhqDir,
-            progress,
-            ct,
-            skipFiles: null,
-            specificVersion: null);
-    }
-
-    public async Task<bool> DownloadPmhqAsync(string version, IProgress<DownloadProgress>? progress = null, CancellationToken ct = default)
-    {
-        _logger.LogInformation("开始下载 PMHQ 版本 {Version}...", version);
-        return await DownloadAndExtractAsync(
-            Constants.NpmPackages.Pmhq,
-            Constants.DefaultPaths.PmhqDir,
-            progress,
-            ct,
-            skipFiles: new[] { "package.json" },
-            specificVersion: version);
-    }
-
     public async Task<bool> DownloadLLBotAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default)
     {
         _logger.LogInformation("开始下载 LLBot...");
@@ -131,7 +104,7 @@ public class DownloadService : IDownloadService
             Constants.DefaultPaths.LLBotDir,
             progress,
             ct,
-            skipFiles: null,
+            skipFiles: new[] { "data", "logs" },
             specificVersion: null);
     }
 
@@ -157,228 +130,6 @@ public class DownloadService : IDownloadService
             ct,
             skipFiles: new[] { "package.json" },
             specificVersion: null);
-    }
-
-    public async Task<bool> DownloadQQAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default)
-    {
-        try
-        {
-            _logger.LogInformation("开始下载 QQ...");
-            progress?.Report(new DownloadProgress { Status = "正在下载 QQ..." });
-
-            if (PlatformHelper.IsMacOS)
-            {
-                return await DownloadQQForMacOSAsync(progress, ct);
-            }
-            else if (PlatformHelper.IsWindows)
-            {
-                return await DownloadQQForWindowsAsync(progress, ct);
-            }
-            else
-            {
-                _logger.LogError("不支持的操作系统");
-                return false;
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "下载 QQ 失败");
-            return false;
-        }
-    }
-
-    private async Task<bool> DownloadQQForMacOSAsync(IProgress<DownloadProgress>? progress, CancellationToken ct)
-    {
-        var tempFile = Path.Combine(Path.GetTempPath(), "QQ-macos.tar.xz");
-        _logger.LogInformation("macOS QQ 原始下载地址: {Url}", Constants.QQDownloadUrl);
-        _logger.LogInformation("临时文件: {Path}", tempFile);
-
-        // 构建 GitHub 代理 URLs
-        var downloadUrls = new[]
-        {
-            $"https://gh-proxy.com/{Constants.QQDownloadUrl}",
-            $"https://ghproxy.net/{Constants.QQDownloadUrl}",
-            $"https://mirror.ghproxy.com/{Constants.QQDownloadUrl}",
-            Constants.QQDownloadUrl  // 直连作为最后的备选
-        };
-
-        _logger.LogInformation("获取到 {Count} 个下载地址（包括代理）", downloadUrls.Length);
-
-        // 依次尝试各个下载地址
-        Exception? lastException = null;
-        foreach (var url in downloadUrls)
-        {
-            try
-            {
-                _logger.LogInformation("尝试下载 QQ: {Url}", url);
-                progress?.Report(new DownloadProgress { Status = "正在下载 QQ..." });
-
-                using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    _logger.LogWarning("下载失败: {StatusCode} from {Url}", response.StatusCode, url);
-                    continue;
-                }
-
-                var totalBytes = response.Content.Headers.ContentLength ?? 0;
-                var downloadedBytes = 0L;
-
-                await using var contentStream = await response.Content.ReadAsStreamAsync(ct);
-                await using var fileStream = new FileStream(tempFile, FileMode.Create, FileAccess.Write, FileShare.None, 65536, true);
-
-                var buffer = new byte[65536];
-                int bytesRead;
-
-                while ((bytesRead = await contentStream.ReadAsync(buffer, ct)) > 0)
-                {
-                    await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
-                    downloadedBytes += bytesRead;
-
-                    progress?.Report(new DownloadProgress
-                    {
-                        Downloaded = downloadedBytes,
-                        Total = totalBytes,
-                        Status = $"正在下载 QQ... {downloadedBytes / 1024 / 1024:F1} MB / {totalBytes / 1024 / 1024:F1} MB"
-                    });
-                }
-
-                _logger.LogInformation("下载成功: {Url}", url);
-                lastException = null;
-                break;
-            }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-            {
-                lastException = ex;
-                _logger.LogWarning(ex, "从 {Url} 下载失败，尝试下一个镜像源", url);
-            }
-        }
-
-        if (lastException != null)
-        {
-            _logger.LogError(lastException, "所有下载源都无法下载 macOS QQ");
-            return false;
-        }
-
-        progress?.Report(new DownloadProgress { Status = "正在解压 QQ..." });
-        _logger.LogInformation("QQ 下载完成，开始解压...");
-
-        // 确保目录存在
-        var qqDir = Constants.DefaultPaths.QQDir;
-        if (Directory.Exists(qqDir))
-        {
-            Directory.Delete(qqDir, true);
-        }
-        Directory.CreateDirectory(qqDir);
-
-        // 解压 tar.xz 文件
-        var tarPsi = new ProcessStartInfo
-        {
-            FileName = "tar",
-            Arguments = $"-xJf \"{tempFile}\" -C \"{qqDir}\"",
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true
-        };
-
-        using var tarProc = Process.Start(tarPsi);
-        if (tarProc == null)
-        {
-            _logger.LogError("无法启动 tar 进程");
-            return false;
-        }
-
-        await tarProc.WaitForExitAsync(ct);
-
-        if (tarProc.ExitCode != 0)
-        {
-            var error = await tarProc.StandardError.ReadToEndAsync(ct);
-            _logger.LogError("解压 QQ 失败，退出码: {ExitCode}，错误: {Error}", tarProc.ExitCode, error);
-            return false;
-        }
-
-        try { File.Delete(tempFile); } catch { }
-
-        // 给 QQ 可执行文件添加执行权限
-        var qqExe = Constants.DefaultPaths.QQExe;
-        if (File.Exists(qqExe))
-        {
-            var chmod = new System.Diagnostics.Process
-            {
-                StartInfo = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "chmod",
-                    Arguments = $"+x \"{qqExe}\"",
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                }
-            };
-            chmod.Start();
-            await chmod.WaitForExitAsync(ct);
-
-            _logger.LogInformation("macOS QQ 安装完成");
-            return true;
-        }
-        else
-        {
-            _logger.LogError("QQ 可执行文件不存在: {Path}", qqExe);
-            return false;
-        }
-    }
-
-    private async Task<bool> DownloadQQForWindowsAsync(IProgress<DownloadProgress>? progress, CancellationToken ct)
-    {
-        var tempFile = Path.Combine(Path.GetTempPath(), "QQ_Setup.exe");
-        _logger.LogInformation("Windows QQ 下载地址: {Url}", Constants.QQDownloadUrl);
-        _logger.LogInformation("临时文件: {Path}", tempFile);
-
-        using (var response = await _httpClient.GetAsync(Constants.QQDownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct))
-        {
-            response.EnsureSuccessStatusCode();
-
-            var totalBytes = response.Content.Headers.ContentLength ?? 0;
-            var downloadedBytes = 0L;
-
-            await using var contentStream = await response.Content.ReadAsStreamAsync(ct);
-            await using var fileStream = new FileStream(tempFile, FileMode.Create, FileAccess.Write, FileShare.None, 65536, true);
-
-            var buffer = new byte[65536];
-            int bytesRead;
-
-            while ((bytesRead = await contentStream.ReadAsync(buffer, ct)) > 0)
-            {
-                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
-                downloadedBytes += bytesRead;
-
-                progress?.Report(new DownloadProgress
-                {
-                    Downloaded = downloadedBytes,
-                    Total = totalBytes,
-                    Status = $"正在下载 QQ... {downloadedBytes / 1024 / 1024:F1} MB / {totalBytes / 1024 / 1024:F1} MB"
-                });
-            }
-        }
-
-        progress?.Report(new DownloadProgress { Status = "正在安装 QQ..." });
-        _logger.LogInformation("QQ 下载完成，开始安装...");
-
-        var process = new System.Diagnostics.Process
-        {
-            StartInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = tempFile,
-                Arguments = "/S",
-                UseShellExecute = true
-            }
-        };
-        process.Start();
-        await process.WaitForExitAsync(ct);
-
-        try { File.Delete(tempFile); } catch { }
-
-        _logger.LogInformation("Windows QQ 安装完成");
-        return true;
     }
 
     public async Task<AppUpdateResult> DownloadAppUpdateAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default)
@@ -1029,6 +780,13 @@ public class DownloadService : IDownloadService
 
                 var destPath = Path.Combine(extractDir, itemName);
 
+                // Native production and development bundles coexist. Preserve the other variant
+                // and user configuration when installing a production Bot release.
+                if (itemName == "native" && Directory.Exists(item))
+                {
+                    MergeNativeDirectory(item, destPath);
+                    continue;
+                }
                 if (File.Exists(destPath))
                     File.Delete(destPath);
                 if (Directory.Exists(destPath))
@@ -1049,4 +807,14 @@ public class DownloadService : IDownloadService
             File.Delete(tarPath);
         }
     }
+    private static void MergeNativeDirectory(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (var file in Directory.GetFiles(source))
+            File.Move(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: true);
+        foreach (var directory in Directory.GetDirectories(source))
+            MergeNativeDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
+        Directory.Delete(source);
+    }
+
 }

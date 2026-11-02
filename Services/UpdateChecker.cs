@@ -24,7 +24,6 @@ public class UpdateInfo
 public interface IUpdateChecker
 {
     Task<UpdateInfo> CheckAppUpdateAsync(string currentVersion, CancellationToken ct = default);
-    Task<UpdateInfo> CheckPmhqUpdateAsync(string currentVersion, CancellationToken ct = default);
     Task<UpdateInfo> CheckLLBotUpdateAsync(string currentVersion, CancellationToken ct = default);
 }
 
@@ -48,15 +47,6 @@ public class UpdateChecker : IUpdateChecker
             Constants.NpmPackages.App,
             currentVersion,
             $"https://github.com/{Constants.GitHubRepos.App}/releases",
-            ct);
-    }
-
-    public async Task<UpdateInfo> CheckPmhqUpdateAsync(string currentVersion, CancellationToken ct = default)
-    {
-        return await CheckUpdateAsync(
-            Constants.NpmPackages.Pmhq,
-            currentVersion,
-            $"https://github.com/{Constants.GitHubRepos.Pmhq}/releases",
             ct);
     }
 

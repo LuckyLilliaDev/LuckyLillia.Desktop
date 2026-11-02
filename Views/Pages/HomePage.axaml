@@ -1,462 +1,267 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:LuckyLilliaDesktop.ViewModels"
-             xmlns:utils="using:LuckyLilliaDesktop.Utils"
+             xmlns:controls="using:LuckyLilliaDesktop.Controls"
+             xmlns:views="using:LuckyLilliaDesktop.Views.Pages"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="700"
              x:Class="LuckyLilliaDesktop.Views.Pages.HomePage"
              x:DataType="vm:HomeViewModel">
 
-    <UserControl.Resources>
-        <ResourceDictionary>
-            <ResourceDictionary.ThemeDictionaries>
-                <ResourceDictionary x:Key="Light">
-                    <SolidColorBrush x:Key="MainBackground" Color="#FFF4FA"/>
-                    <SolidColorBrush x:Key="SidebarBackground" Color="#FFFFFBFE"/>
-                    <SolidColorBrush x:Key="CardBackground" Color="#FDF7FE"/>
-                    <SolidColorBrush x:Key="CardBackgroundStrong" Color="#FFFFFFFF"/>
-                    <SolidColorBrush x:Key="CardBackgroundSecondary" Color="#FFF0F8"/>
-                    <SolidColorBrush x:Key="BorderColor" Color="#F3C4DE"/>
-                    <SolidColorBrush x:Key="PrimaryBrush" Color="#E84D9C"/>
-                    <SolidColorBrush x:Key="PrimaryBrushSoft" Color="#FFF0F8"/>
-                    <SolidColorBrush x:Key="DangerColor" Color="#FF5D72"/>
-                    <SolidColorBrush x:Key="SuccessColor" Color="#22C55E"/>
-                    <SolidColorBrush x:Key="WarningColor" Color="#F59E0B"/>
-                    <SolidColorBrush x:Key="TextPrimary" Color="#3B2434"/>
-                    <SolidColorBrush x:Key="TextSecondary" Color="#8D6E82"/>
-                    <SolidColorBrush x:Key="TitleBarBackground" Color="#FFF9FD"/>
-                    <SolidColorBrush x:Key="WindowButtonHover" Color="#10E84D9C"/>
-                    <SolidColorBrush x:Key="CloseButtonHover" Color="#FFE6EC"/>
-                    <SolidColorBrush x:Key="WindowButtonStroke" Color="#7A6274"/>
-                    <SolidColorBrush x:Key="SystemControlBackgroundAltHighBrush" Color="#FDF7FE"/>
-                    <SolidColorBrush x:Key="SystemControlBackgroundBaseLowBrush" Color="#FFF0F8"/>
-                    <SolidColorBrush x:Key="SystemControlForegroundBaseHighBrush" Color="#3B2434"/>
-                    <SolidColorBrush x:Key="SystemControlForegroundBaseMediumBrush" Color="#8D6E82"/>
-                    <SolidColorBrush x:Key="SystemControlForegroundBaseLowBrush" Color="#F3C4DE"/>
-                </ResourceDictionary>
-                <ResourceDictionary x:Key="Dark">
-                    <SolidColorBrush x:Key="MainBackground" Color="#141018"/>
-                    <SolidColorBrush x:Key="SidebarBackground" Color="#1A131C"/>
-                    <SolidColorBrush x:Key="CardBackground" Color="#201722"/>
-                    <SolidColorBrush x:Key="CardBackgroundStrong" Color="#281C2B"/>
-                    <SolidColorBrush x:Key="CardBackgroundSecondary" Color="#241926"/>
-                    <SolidColorBrush x:Key="BorderColor" Color="#553648"/>
-                    <SolidColorBrush x:Key="PrimaryBrush" Color="#F472B6"/>
-                    <SolidColorBrush x:Key="PrimaryBrushSoft" Color="#3A2131"/>
-                    <SolidColorBrush x:Key="DangerColor" Color="#FB7185"/>
-                    <SolidColorBrush x:Key="SuccessColor" Color="#34D399"/>
-                    <SolidColorBrush x:Key="WarningColor" Color="#FBBF24"/>
-                    <SolidColorBrush x:Key="TextPrimary" Color="#FFF1F8"/>
-                    <SolidColorBrush x:Key="TextSecondary" Color="#D8B8CA"/>
-                    <SolidColorBrush x:Key="TitleBarBackground" Color="#18111A"/>
-                    <SolidColorBrush x:Key="WindowButtonHover" Color="#342131"/>
-                    <SolidColorBrush x:Key="CloseButtonHover" Color="#4A1F2A"/>
-                    <SolidColorBrush x:Key="WindowButtonStroke" Color="#D8B8CA"/>
-                    <SolidColorBrush x:Key="SystemControlBackgroundAltHighBrush" Color="#281C2B"/>
-                    <SolidColorBrush x:Key="SystemControlBackgroundBaseLowBrush" Color="#3A2131"/>
-                    <SolidColorBrush x:Key="SystemControlForegroundBaseHighBrush" Color="#FFF1F8"/>
-                    <SolidColorBrush x:Key="SystemControlForegroundBaseMediumBrush" Color="#D8B8CA"/>
-                    <SolidColorBrush x:Key="SystemControlForegroundBaseLowBrush" Color="#553648"/>
-                </ResourceDictionary>
-            </ResourceDictionary.ThemeDictionaries>
-        </ResourceDictionary>
-    </UserControl.Resources>
-
     <UserControl.Styles>
-        <Style Selector="Button">
-            <Setter Property="CornerRadius" Value="16"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Padding" Value="14,8"/>
+        <Style Selector=":is(Button).toolbar">
+            <Setter Property="Padding" Value="10,5"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontWeight" Value="Medium"/>
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         </Style>
-        <Style Selector="Button:pointerover">
-            <Setter Property="Opacity" Value="0.92"/>
+        <Style Selector=":is(Button).toolbar:pointerover">
+            <Setter Property="Background" Value="{DynamicResource HoverBackground}"/>
         </Style>
-        <Style Selector="TextBox">
-            <Setter Property="CornerRadius" Value="14"/>
-            <Setter Property="Padding" Value="12,9"/>
-            <Setter Property="Background" Value="{DynamicResource CardBackgroundStrong}"/>
-            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}"/>
+        <Style Selector=":is(Button).toolbar:disabled">
+            <Setter Property="Opacity" Value="0.45"/>
         </Style>
-        <Style Selector="ComboBox">
-            <Setter Property="CornerRadius" Value="14"/>
-            <Setter Property="Padding" Value="10,8"/>
-            <Setter Property="Background" Value="{DynamicResource CardBackgroundStrong}"/>
-            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}"/>
+        <Style Selector=":is(Button).toolbar PathIcon">
+            <Setter Property="Width" Value="14"/>
+            <Setter Property="Height" Value="14"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         </Style>
-        <Style Selector="ListBoxItem:selected">
+        <Style Selector="ToggleButton.toolbar:checked /template/ ContentPresenter#PART_ContentPresenter">
             <Setter Property="Background" Value="{DynamicResource PrimaryBrushSoft}"/>
             <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}"/>
         </Style>
+        <Style Selector="ToggleButton.toolbar:checked PathIcon">
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}"/>
+        </Style>
+        <Style Selector="Button.overlay">
+            <Setter Property="Padding" Value="18,10"/>
+            <Setter Property="CornerRadius" Value="14"/>
+        </Style>
+        <Style Selector="ComboBox.instance">
+            <Setter Property="MinWidth" Value="170"/>
+            <Setter Property="Padding" Value="10,4"/>
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Background" Value="{DynamicResource CardBackgroundStrong}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}"/>
+        </Style>
+        <Style Selector="MenuItem">
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
     </UserControl.Styles>
 
-
-    <Panel>
-        <!-- 主内容区域 -->
-        <ScrollViewer>
-            <StackPanel Spacing="16" Margin="24">
-                <!-- 更新提示横幅 -->
-                <Border Background="#F59E0B"
-                        CornerRadius="14"
-                        Padding="16,8"
-                        IsVisible="{Binding HasUpdate}">
-                    <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center" VerticalAlignment="Center">
-                        <PathIcon Data="M21 10.12h-6.78l2.74-2.82c-2.73-2.7-7.15-2.8-9.88-.1-2.73 2.71-2.73 7.08 0 9.79s7.15 2.71 9.88 0C18.32 15.65 19 14.08 19 12.1h2c0 1.98-.88 4.55-2.64 6.29-3.51 3.48-9.21 3.48-12.72 0-3.5-3.47-3.53-9.11-.02-12.58s9.14-3.47 12.65 0L21 3v7.12z"
-                                  Width="20" Height="20"
-                                  Foreground="White"
-                                  VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding UpdateBannerText}" 
-                                   Foreground="White" 
-                                   FontSize="14"
-                                   TextWrapping="Wrap"
-                                   MaxWidth="500"
-                                   VerticalAlignment="Center"/>
-                        <Button Content="更新"
-                                Command="{Binding UpdateCommand}"
-                                Background="Transparent"
-                                Foreground="White"
-                                Padding="8,4"
-                                VerticalAlignment="Center"/>
-                    </StackPanel>
-                </Border>
-
-                <!-- 错误提示横幅 -->
-                <Border Background="{DynamicResource DangerColor}"
-                        CornerRadius="14"
-                        Padding="16,12"
-                        IsVisible="{Binding HasError}">
-                    <DockPanel>
-                        <PathIcon DockPanel.Dock="Left"
-                                  Data="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"
-                                  Width="24" Height="24"
-                                  Foreground="White"
-                                  Margin="0,0,12,0"/>
-                        <TextBlock Text="{Binding ErrorMessage}"
-                                   Foreground="White"
-                                   FontSize="14"
-                                   TextWrapping="Wrap"
-                                   VerticalAlignment="Center"/>
-                    </DockPanel>
-                </Border>
-
-                <!-- 进程资源监控标题 -->
-                <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,8,0,0">
-                    <PathIcon Data="M15 9H9v6h6V9zm-2 4h-2v-2h2v2zm8-2V9h-2V7c0-1.1-.9-2-2-2h-2V3h-2v2h-2V3H9v2H7c-1.1 0-2 .9-2 2v2H3v2h2v2H3v2h2v2c0 1.1.9 2 2 2h2v2h2v-2h2v2h2v-2h2c1.1 0 2-.9 2-2v-2h2v-2h-2v-2h2zm-4 6H7V7h10v10z"
-                              Width="24" Height="24"
-                              Foreground="{DynamicResource PrimaryBrush}"/>
-                    <TextBlock Text="进程资源监控"
-                               FontSize="22"
-                               FontWeight="SemiBold"
-                               Foreground="{DynamicResource TextPrimary}"/>
+    <Grid RowDefinitions="Auto,*">
+        <!-- 窄工具条: 实例选择 + 状态 + 操作 -->
+        <Border Grid.Row="0"
+                Height="44"
+                Padding="12,0,8,0"
+                Background="{DynamicResource CardBackground}"
+                BorderBrush="{DynamicResource BorderColor}"
+                BorderThickness="0,0,0,1"
+                CornerRadius="12,12,0,0">
+            <DockPanel VerticalAlignment="Center">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+                    <Button Classes="toolbar"
+                            Command="{Binding UpdateCommand}"
+                            IsVisible="{Binding HasUpdate}"
+                            ToolTip.Tip="{Binding UpdateBannerText}">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <PathIcon Data="M21 10.12h-6.78l2.74-2.82c-2.73-2.7-7.15-2.8-9.88-.1-2.73 2.71-2.73 7.08 0 9.79s7.15 2.71 9.88 0C18.32 15.65 19 14.08 19 12.1h2c0 1.98-.88 4.55-2.64 6.29-3.51 3.48-9.21 3.48-12.72 0-3.5-3.47-3.53-9.11-.02-12.58s9.14-3.47 12.65 0L21 3v7.12z"
+                                      Foreground="{DynamicResource WarningColor}"/>
+                            <TextBlock Text="有更新" Foreground="{DynamicResource WarningColor}"/>
+                        </StackPanel>
+                    </Button>
+                    <ToggleButton Classes="toolbar"
+                                  IsChecked="{Binding ShowTerminal}"
+                                  IsEnabled="{Binding CanShowTerminal}"
+                                  ToolTip.Tip="查看当前实例的终端输出，再点一次回到 WebUI">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <PathIcon Data="M20 4H4c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10zm-2-1h-6v-2h6v2zM7.5 17l-1.41-1.41L8.67 13l-2.59-2.59L7.5 9l4 4-4 4z"/>
+                            <TextBlock Text="终端日志"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <Button Classes="toolbar"
+                            x:Name="RefreshButton"
+                            Click="RefreshButton_Click"
+                            IsEnabled="{Binding CanRefresh}"
+                            ToolTip.Tip="刷新页面">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <PathIcon Data="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                            <TextBlock Text="刷新"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Classes="toolbar"
+                            Command="{Binding StartStopCommand}"
+                            IsEnabled="{Binding CanStartStop}"
+                            ToolTip.Tip="启动 / 停止当前实例">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <PathIcon Data="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/>
+                            <TextBlock Text="{Binding StartStopText}"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Classes="toolbar" ToolTip.Tip="更多操作">
+                        <PathIcon Data="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/>
+                        <Button.Flyout>
+                            <MenuFlyout Placement="BottomEdgeAlignedRight">
+                                <MenuItem Header="重启当前实例" Command="{Binding RestartCommand}" IsEnabled="{Binding CanRestart}"/>
+                                <MenuItem Header="随桌面端启动" Command="{Binding ToggleAutoStartCommand}" IsEnabled="{Binding CanToggleAutoStart}"
+                                          ToggleType="CheckBox" IsChecked="{Binding SelectedIsAutoStart, Mode=OneWay}"/>
+                                <Separator/>
+                                <MenuItem Header="删除当前实例..." Command="{Binding DeleteInstanceCommand}" IsEnabled="{Binding CanDelete}"/>
+                                <MenuItem Header="重新扫描实例目录" Command="{Binding RefreshInstancesCommand}"/>
+                            </MenuFlyout>
+                        </Button.Flyout>
+                    </Button>
                 </StackPanel>
 
-                <!-- 进程卡片: 无头 [LLBot信息 + Bot占用], 非无头 [Bot占用 + QQ占用], 恒 2 列 -->
-                <UniformGrid Columns="{Binding ProcessCardColumns}">
-                    <!-- LLBot 信息卡 (无头模式显示: 版本 + 已运行时长) -->
-                    <Border Background="{DynamicResource CardBackground}"
-                            BorderBrush="{DynamicResource BorderColor}"
-                            BorderThickness="1"
-                            CornerRadius="20" Padding="16" Margin="8,0"
-                            IsVisible="{Binding IsHeadless}"
-                            BoxShadow="0 18 48 0 #18E84D9C">
-                        <!-- 标题固定顶部, 2x2 信息网格撑满剩余高度 -->
-                        <Grid RowDefinitions="Auto,Auto,*">
-                            <!-- 标题行 -->
-                            <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10">
-                                <PathIcon Data="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"
-                                          Width="20" Height="20"
-                                          Foreground="{DynamicResource PrimaryBrush}"/>
-                                <TextBlock Text="LLBot 信息"
-                                           FontSize="16"
-                                           FontWeight="Bold"
-                                           Foreground="{DynamicResource TextPrimary}"/>
-                            </StackPanel>
-                            <Border Grid.Row="1" Height="1" Margin="0,12" Background="{DynamicResource BorderColor}"/>
-                            <!-- 信息网格: 2 列 2 行, 每格统一 14 Medium 单行 (与 Bot 卡字号一致), 平分剩余高度 -->
-                            <Grid Grid.Row="2" ColumnDefinitions="*,*" RowDefinitions="*,*">
-                                <TextBlock Grid.Row="0" Grid.Column="0" VerticalAlignment="Center"
-                                           Text="{Binding LLBotVersion, StringFormat='版本: v{0}'}"
-                                           FontSize="14" FontWeight="Medium" Foreground="{DynamicResource TextPrimary}"/>
-                                <TextBlock Grid.Row="0" Grid.Column="1" VerticalAlignment="Center"
-                                           Text="{Binding NodeVersion, StringFormat='Node: {0}'}"
-                                           FontSize="14" FontWeight="Medium" Foreground="{DynamicResource TextPrimary}"/>
-                                <TextBlock Grid.Row="1" Grid.Column="0" VerticalAlignment="Center"
-                                           Text="{Binding StartedAt, StringFormat='启动于: {0}'}"
-                                           FontSize="14" FontWeight="Medium" Foreground="{DynamicResource TextPrimary}"/>
-                                <TextBlock Grid.Row="1" Grid.Column="1" VerticalAlignment="Center"
-                                           Text="{Binding Uptime, StringFormat='已运行: {0}'}"
-                                           FontSize="14" FontWeight="Medium" Foreground="{DynamicResource TextPrimary}"/>
-                            </Grid>
-                        </Grid>
-                    </Border>
+                <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                    <TextBlock Text="实例"
+                               FontSize="13"
+                               Foreground="{DynamicResource TextSecondary}"
+                               VerticalAlignment="Center"/>
+                    <!-- 状态只靠颜色点: 绿 运行中 / 黄 启动或停止中 / 灰 未运行 / 红 失败; 名字右边是端口.
+                         列表末尾多一项 "新建实例", 选它不是选实例 (HomeViewModel.PickerSelection) -->
+                    <ComboBox Classes="instance"
+                              x:Name="InstancePicker"
+                              ItemsSource="{Binding PickerItems}"
+                              SelectedItem="{Binding PickerSelection}"
+                              SelectionChanged="InstancePicker_SelectionChanged"
+                              VerticalAlignment="Center">
+                        <ComboBox.DataTemplates>
+                            <DataTemplate DataType="{x:Type vm:InstanceViewModel}" x:DataType="vm:InstanceViewModel">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Ellipse Width="8" Height="8" VerticalAlignment="Center"
+                                             Fill="{Binding BotStatus, Converter={StaticResource StatusToColorConverter}}"/>
+                                    <TextBlock Text="{Binding Name}" VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding PortText}"
+                                               IsVisible="{Binding HasPort}"
+                                               Foreground="{DynamicResource TextSecondary}"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataTemplate>
+                            <DataTemplate DataType="{x:Type vm:NewInstanceEntry}" x:DataType="vm:NewInstanceEntry">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <PathIcon Width="10" Height="10" VerticalAlignment="Center"
+                                              Foreground="{DynamicResource PrimaryBrush}"
+                                              Data="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+                                    <TextBlock Text="新建实例..." Foreground="{DynamicResource PrimaryBrush}" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ComboBox.DataTemplates>
+                    </ComboBox>
+                    <TextBlock Text="{Binding PageError}"
+                               IsVisible="{Binding HasPageError}"
+                               FontSize="12"
+                               Foreground="{DynamicResource DangerColor}"
+                               TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
 
-                    <!-- Bot占用 卡片（整合 Manager、PMHQ、LLBot） -->
-                    <Border Background="{DynamicResource CardBackground}"
-                            BorderBrush="{DynamicResource BorderColor}"
-                            BorderThickness="1"
-                            CornerRadius="20" Padding="16" Margin="8,0"
-                    BoxShadow="0 18 48 0 #18E84D9C">
-                        <StackPanel Spacing="12">
-                            <!-- 标题行 -->
-                            <StackPanel Orientation="Horizontal" Spacing="10">
-                                <PathIcon Data="M17.5 15.5c0 1.61-1.39 3-3 3-.49 0-.97-.13-1.39-.35L7.5 21l.75-3.75C7.49 16.57 7 15.59 7 14.5c0-2.21 1.79-4 4-4 2.21 0 4 1.79 4 4 0 .5-.09.97-.26 1.4l2.82-2.82c.28.48.44 1.03.44 1.62zM12 6c2.76 0 5 2.24 5 5 0 .51-.08 1-.22 1.46l1.71-1.71c.01-.25.01-.5.01-.75 0-3.86-3.14-7-7-7-1.93 0-3.68.79-4.94 2.06l1.42 1.42C8.95 5.55 10.4 5 12 5zm0 1c-2.21 0-4 1.79-4 4 0 .89.29 1.71.78 2.37l5.59-5.59C13.71 7.29 12.89 7 12 7z"
-                                          Width="20" Height="20"
-                                          Foreground="{DynamicResource PrimaryBrush}"/>
-                                <TextBlock Text="LLBot 占用"
-                                           FontSize="16"
-                                           FontWeight="Bold"
-                                           Foreground="{DynamicResource TextPrimary}"/>
-                            </StackPanel>
-                            <!-- 状态行 -->
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                <Ellipse Width="16" Height="16"
-                                         Fill="{Binding BotStatus, Converter={StaticResource StatusToColorConverter}}"/>
-                                <TextBlock Text="{Binding BotStatusText}"
-                                           FontSize="13"
-                                           Foreground="{DynamicResource TextSecondary}"/>
-                            </StackPanel>
-                            <Border Height="1" Background="{DynamicResource BorderColor}"/>
-                            <!-- CPU -->
-                            <StackPanel Spacing="6">
-                                <TextBlock Text="{Binding BotCpu, StringFormat=CPU: {0:F1}%}"
-                                           FontSize="14"
-                                           FontWeight="Medium"
-                                           Foreground="{DynamicResource TextPrimary}"/>
-                                <ProgressBar Value="{Binding BotCpu}" Maximum="100" Height="6"
-                                             Foreground="{DynamicResource PrimaryBrush}" Background="{DynamicResource BorderColor}"/>
-                            </StackPanel>
-                            <!-- 内存 -->
-                            <StackPanel Spacing="6">
-                                <TextBlock FontSize="14"
-                                           FontWeight="Medium"
-                                           Foreground="{DynamicResource TextPrimary}">
-                                    <TextBlock.Text>
-                                        <MultiBinding StringFormat="{}{0:F0} MB 已用 / {1:F0} MB 可用">
-                                            <Binding Path="BotMemory"/>
-                                            <Binding Path="AvailableMemory"/>
-                                        </MultiBinding>
-                                    </TextBlock.Text>
-                                </TextBlock>
-                                <ProgressBar Value="{Binding BotMemory}" Maximum="{Binding TotalMemory}" Height="6"
-                                             Foreground="{DynamicResource SuccessColor}" Background="{DynamicResource BorderColor}"/>
-                            </StackPanel>
-                        </StackPanel>
-                    </Border>
+        <Panel Grid.Row="1">
+            <!-- 原生 HWND 永远盖在 Avalonia 内容上面, 所以显示遮罩时必须隐藏它 -->
+            <controls:WebView2Host x:Name="WebView"
+                                   Source="{Binding WebUiUrl}"
+                                   IsVisible="{Binding ShowWebView}"/>
 
-                    <!-- QQ 卡片 (无头模式隐藏) -->
-                    <Border Background="{DynamicResource CardBackground}"
-                            BorderBrush="{DynamicResource BorderColor}"
-                            BorderThickness="1"
-                            CornerRadius="20" Padding="16" Margin="8,0"
-                            IsVisible="{Binding !IsHeadless}"
-                    BoxShadow="0 18 48 0 #18E84D9C">
-                        <StackPanel Spacing="12">
-                            <!-- 标题行 -->
-                            <StackPanel Orientation="Horizontal" Spacing="10">
-                                <PathIcon Data="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"
-                                          Width="20" Height="20"
-                                          Foreground="{DynamicResource PrimaryBrush}"/>
-                                <TextBlock Text="QQ"
-                                           FontSize="16"
-                                           FontWeight="Bold"
-                                           Foreground="{DynamicResource TextPrimary}"/>
-                                <TextBlock Text="{Binding QQVersion}"
-                                           FontSize="12"
-                                           Foreground="{DynamicResource TextSecondary}"
-                                           VerticalAlignment="Center"
-                                           IsVisible="{Binding QQVersion, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
-                            </StackPanel>
-                            <!-- 状态行 -->
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                <Ellipse Width="16" Height="16"
-                                         Fill="{Binding QQStatus, Converter={StaticResource StatusToColorConverter}}"/>
-                                <TextBlock Text="{Binding QQStatusText}"
-                                           FontSize="13"
-                                           Foreground="{DynamicResource TextSecondary}"/>
-                            </StackPanel>
-                            <Border Height="1" Background="{DynamicResource BorderColor}"/>
-                            <!-- CPU -->
-                            <StackPanel Spacing="6">
-                                <TextBlock Text="{Binding QQCpu, StringFormat=CPU: {0:F1}%}"
-                                           FontSize="14"
-                                           FontWeight="Medium"
-                                           Foreground="{DynamicResource TextPrimary}"/>
-                                <ProgressBar Value="{Binding QQCpu}" Maximum="100" Height="6"
-                                             Foreground="{DynamicResource PrimaryBrush}" Background="{DynamicResource BorderColor}"/>
-                            </StackPanel>
-                            <!-- 内存 -->
-                            <StackPanel Spacing="6">
-                                <TextBlock FontSize="14"
-                                           FontWeight="Medium"
-                                           Foreground="{DynamicResource TextPrimary}">
-                                    <TextBlock.Text>
-                                        <MultiBinding StringFormat="{}{0:F0} MB 已用 / {1:F0} MB 可用">
-                                            <Binding Path="QQMemory"/>
-                                            <Binding Path="AvailableMemory"/>
-                                        </MultiBinding>
-                                    </TextBlock.Text>
-                                </TextBlock>
-                                <ProgressBar Value="{Binding QQMemory}" Maximum="{Binding TotalMemory}" Height="6"
-                                             Foreground="{DynamicResource SuccessColor}" Background="{DynamicResource BorderColor}"/>
-                            </StackPanel>
-                        </StackPanel>
-                    </Border>
-                </UniformGrid>
+            <!-- 选中实例的终端输出. 外面套一层是因为 LogPage 自己的 DataContext 换成了 TerminalLog, 可见性要绑在 HomeViewModel 上 -->
+            <Border IsVisible="{Binding ShowTerminalView}">
+                <views:LogPage DataContext="{Binding TerminalLog}"/>
+            </Border>
 
-                <!-- 最近日志卡片 -->
+            <!-- 准备 / 下载 / 实例未运行 / 启动中 / 不支持内嵌 时的遮罩 -->
+            <Border IsVisible="{Binding ShowOverlay}"
+                    Background="{DynamicResource MainBackground}"
+                    CornerRadius="0,0,12,12">
                 <Border Background="{DynamicResource CardBackground}"
                         BorderBrush="{DynamicResource BorderColor}"
                         BorderThickness="1"
-                        CornerRadius="20" Padding="24" Height="300"
-                    BoxShadow="0 18 48 0 #18E84D9C">
-                    <DockPanel>
-                        <!-- 标题行 -->
-                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,16">
-                            <StackPanel Orientation="Horizontal" Spacing="12">
-                                <PathIcon Data="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 1v5h5M16 13H8M16 17H8M10 9H8"
-                                          Width="24" Height="24"
-                                          Foreground="{DynamicResource PrimaryBrush}"/>
-                                <TextBlock Text="最近日志"
-                                           FontSize="20"
-                                           FontWeight="Bold"
-                                           Foreground="{DynamicResource TextPrimary}"/>
-                            </StackPanel>
-                            <Button DockPanel.Dock="Right"
-                                    Content="查看全部 →"
-                                    Command="{Binding ViewAllLogsCommand}"
-                                    Background="Transparent"
-                                    Foreground="{DynamicResource PrimaryBrush}"
-                                    HorizontalAlignment="Right"/>
-                        </DockPanel>
-                        <Border Height="1" Background="{DynamicResource BorderColor}" DockPanel.Dock="Top" Margin="0,0,0,16"/>
-
-                        <!-- 日志内容 -->
-                        <Border Background="{DynamicResource MainBackground}"
-                                BorderBrush="{DynamicResource BorderColor}"
-                                BorderThickness="1"
-                                CornerRadius="14" Padding="12">
-                            <Panel>
-                                <!-- 空状态 -->
-                                <TextBlock Text="暂无日志"
-                                           FontSize="14"
-                                           Foreground="{DynamicResource TextSecondary}"
-                                           FontStyle="Italic"
-                                           HorizontalAlignment="Center"
-                                           VerticalAlignment="Center"
-                                           IsVisible="{Binding !HasRecentLogs}"/>
-                                <!-- 日志列表 -->
-                                <ScrollViewer x:Name="RecentLogsScrollViewer"
-                                              IsVisible="{Binding HasRecentLogs}">
-                                    <ItemsControl ItemsSource="{Binding RecentLogs}">
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate x:DataType="vm:LogEntryViewModel">
-                                                <TextBlock utils:AnsiParser.AnsiText="{Binding FormattedText}"
-                                                           FontFamily="Cascadia Code,Consolas,Courier New,Segoe UI Emoji,Microsoft YaHei"
-                                                           FontSize="13"
-                                                           Foreground="{DynamicResource TextPrimary}"
-                                                           TextTrimming="CharacterEllipsis"
-                                                           Margin="0,2"
-                                                           Classes.error="{Binding IsError}"/>
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                        <ItemsControl.Styles>
-                                            <Style Selector="TextBlock.error">
-                                                <Setter Property="Foreground" Value="{DynamicResource DangerColor}"/>
-                                            </Style>
-                                        </ItemsControl.Styles>
-                                    </ItemsControl>
-                                </ScrollViewer>
-                            </Panel>
-                        </Border>
-                    </DockPanel>
-                </Border>
-            </StackPanel>
-        </ScrollViewer>
-
-        <!-- 下载进度遮罩层 -->
-        <Border Background="#CC000000"
-                IsVisible="{Binding IsDownloading}">
-            <Border Background="{DynamicResource CardBackground}"
-                    BorderBrush="{DynamicResource BorderColor}"
-                    BorderThickness="1"
-                    CornerRadius="16"
-                    Padding="32"
-                    HorizontalAlignment="Center"
-                    VerticalAlignment="Center"
-                    MinWidth="400"
-                    BoxShadow="0 18 48 0 #18E84D9C">
-                <StackPanel Spacing="20">
-                    <!-- 标题 -->
-                    <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Center">
-                        <PathIcon Data="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"
-                                  Width="28" Height="28"
-                                  Foreground="{DynamicResource PrimaryBrush}"/>
-                        <TextBlock Text="正在下载"
-                                   FontSize="22"
+                        CornerRadius="20"
+                        Padding="32"
+                        MinWidth="360"
+                        MaxWidth="540"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        BoxShadow="0 18 48 0 #18E84D9C">
+                    <StackPanel Spacing="16">
+                        <controls:LoadingSpinner IsVisible="{Binding ShowSpinner}"
+                                                 SpinnerSize="40"
+                                                 HorizontalAlignment="Center"/>
+                        <PathIcon IsVisible="{Binding ShowErrorIcon}"
+                                  Data="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"
+                                  Width="40" Height="40"
+                                  Foreground="{DynamicResource WarningColor}"
+                                  HorizontalAlignment="Center"/>
+                        <TextBlock Text="{Binding OverlayTitle}"
+                                   FontSize="20"
                                    FontWeight="Bold"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
                                    Foreground="{DynamicResource TextPrimary}"/>
-                    </StackPanel>
+                        <TextBlock Text="{Binding OverlayMessage}"
+                                   IsVisible="{Binding HasOverlayMessage}"
+                                   FontSize="13"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Foreground="{DynamicResource TextSecondary}"/>
 
-                    <!-- 下载项目 -->
-                    <TextBlock Text="{Binding DownloadingItem}"
-                               FontSize="16"
-                               FontWeight="Medium"
-                               Foreground="{DynamicResource TextSecondary}"
-                               HorizontalAlignment="Center"/>
-
-                    <!-- 进度条 -->
-                    <StackPanel Spacing="8">
-                        <ProgressBar Value="{Binding DownloadProgress}"
-                                     Maximum="100"
-                                     Height="8"
-                                     Foreground="{DynamicResource PrimaryBrush}"
-                                     Background="{DynamicResource BorderColor}"
-                                     CornerRadius="4"/>
-                        <DockPanel>
-                            <TextBlock Text="{Binding DownloadStatus}"
-                                       FontSize="13"
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBlock Text="{Binding DownloadProgress, StringFormat={}{0:F0}%}"
-                                       FontSize="13"
-                                       Foreground="{DynamicResource TextSecondary}"
-                                       HorizontalAlignment="Right"/>
-                        </DockPanel>
-                    </StackPanel>
-
-                    <!-- 取消按钮 -->
-                    <Button Command="{Binding CancelDownloadCommand}"
-                            HorizontalAlignment="Center"
-                            Background="{DynamicResource DangerColor}"
-                            Foreground="White"
-                            Padding="24,10"
-                            CornerRadius="6">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <PathIcon Data="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
-                                      Width="16" Height="16"
-                                      Foreground="White"/>
-                            <TextBlock Text="取消下载" FontSize="14" Foreground="White"/>
+                        <StackPanel Spacing="8" IsVisible="{Binding ShowProgress}">
+                            <ProgressBar Value="{Binding DownloadProgress}"
+                                         Maximum="100"
+                                         Height="8"
+                                         Foreground="{DynamicResource PrimaryBrush}"
+                                         Background="{DynamicResource BorderColor}"
+                                         CornerRadius="4"/>
+                            <DockPanel>
+                                <TextBlock Text="{Binding DownloadProgress, StringFormat={}{0:F0}%}"
+                                           DockPanel.Dock="Right"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource TextSecondary}"/>
+                                <TextBlock Text="{Binding DownloadStatus}"
+                                           FontSize="12"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{DynamicResource TextSecondary}"/>
+                            </DockPanel>
                         </StackPanel>
-                    </Button>
-                </StackPanel>
-            </Border>
-        </Border>
 
-        <!-- 浮动启动/停止按钮 -->
-        <Button Classes="ActionButton"
-                Command="{Binding GlobalStartStopCommand}"
-                IsEnabled="{Binding IsButtonEnabled}"
-                HorizontalAlignment="Center"
-                VerticalAlignment="Bottom"
-                Margin="0,0,0,16"
-                Width="120"
-                Height="48"
-                CornerRadius="24"
-                Background="{Binding StartButtonBackground}"
-                IsVisible="{Binding !IsDownloading}">
-            <TextBlock Text="{Binding StartButtonText}"
-                       FontSize="16"
-                       FontWeight="Medium"
-                       Foreground="White"/>
-        </Button>
-    </Panel>
+                        <WrapPanel HorizontalAlignment="Center" ItemSpacing="10" LineSpacing="10">
+                            <Button Classes="ActionButton"
+                                    IsVisible="{Binding ShowStartButton}"
+                                    Command="{Binding StartStopCommand}"
+                                    Content="{Binding StartButtonText}"/>
+                            <Button Classes="ActionButton"
+                                    IsVisible="{Binding ShowNewInstanceButton}"
+                                    Command="{Binding NewInstanceCommand}"
+                                    Content="新建实例"/>
+                            <Button Classes="overlay"
+                                    IsVisible="{Binding ShowCancelDownload}"
+                                    Command="{Binding CancelDownloadCommand}"
+                                    Background="{DynamicResource DangerColor}"
+                                    Foreground="White"
+                                    Content="取消下载"/>
+                            <Button Classes="ActionButton"
+                                    IsVisible="{Binding ShowInstallWebView2}"
+                                    Command="{Binding InstallWebView2Command}"
+                                    Content="下载安装 WebView2 运行时"/>
+                            <Button Classes="overlay"
+                                    IsVisible="{Binding ShowOpenInBrowser}"
+                                    Command="{Binding OpenInBrowserCommand}"
+                                    Content="在浏览器中打开 WebUI"/>
+                            <Button Classes="overlay"
+                                    IsVisible="{Binding ShowLogsButton}"
+                                    Command="{Binding ViewLogsCommand}"
+                                    Content="终端日志"/>
+                            <Button Classes="overlay"
+                                    IsVisible="{Binding ShowLogsButton}"
+                                    Command="{Binding OpenLogsCommand}"
+                                    Content="打开日志目录"/>
+                        </WrapPanel>
+                    </StackPanel>
+                </Border>
+            </Border>
+        </Panel>
+    </Grid>
 </UserControl>

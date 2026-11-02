@@ -9,7 +9,5 @@ namespace LuckyLilliaDesktop.Models;
     WriteIndented = true,
     GenerationMode = JsonSourceGenerationMode.Metadata)]
 [JsonSerializable(typeof(AppConfig))]
-[JsonSerializable(typeof(LLBotConfig))]
-[JsonSerializable(typeof(EmailConfig))]
 [JsonSerializable(typeof(Dictionary<string, JsonNode?>))]
 public partial class AppJsonContext : JsonSerializerContext;

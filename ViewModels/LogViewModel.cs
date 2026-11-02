@@ -20,17 +20,8 @@ public class LogEntryViewModel : ViewModelBase
     {
         get
         {
-            var timestamp = LogEntry.Timestamp.ToString("MM-dd HH:mm:ss");
-            string text;
-            if (LogEntry.ProcessName == "LLBot")
-            {
-                text = $"{timestamp} {LogEntry.Message}";
-            }
-            else
-            {
-                text = $"{timestamp} [{LogEntry.ProcessName}] {LogEntry.Message}";
-            }
-            return SanitizeText(text, preserveAnsi: true);
+            // 视图已按实例过滤, 不再带 [实例名] 前缀
+            return SanitizeText($"{LogEntry.Timestamp:MM-dd HH:mm:ss} {LogEntry.Message}", preserveAnsi: true);
         }
     }
 
@@ -102,6 +93,24 @@ public class LogViewModel : ViewModelBase, IDisposable
     public event Action? ScrollToBottomRequested;
     public event Action? ClearSelectionRequested;
 
+    // 只看这一个实例 (LogEntry.ProcessName) 的输出; null 时什么都不显示
+    private string? _instance;
+    public string? Instance
+    {
+        get => _instance;
+        set
+        {
+            if (_instance == value) return;
+            this.RaiseAndSetIfChanged(ref _instance, value);
+            this.RaisePropertyChanged(nameof(Title));
+            RefreshRecentLogs();
+        }
+    }
+
+    public string Title => Instance == null ? "终端日志" : $"终端日志 · {Instance}";
+
+    public void ScrollToBottom() => ScrollToBottomRequested?.Invoke();
+
     private bool _autoScroll = true;
     public bool AutoScroll
     {
@@ -139,8 +148,7 @@ public class LogViewModel : ViewModelBase, IDisposable
         ClearLogsCommand = ReactiveCommand.Create(() =>
         {
             LogEntries.Clear();
-            _logCollector.ClearLogs();
-            _logger.LogInformation("日志已清空");
+            _logCollector.ClearLogs(Instance);
         }, outputScheduler: AvaloniaUiScheduler.Instance);
 
         CopySelectedCommand = ReactiveCommand.CreateFromTask(async () =>
@@ -170,27 +178,20 @@ public class LogViewModel : ViewModelBase, IDisposable
             SelectedLogEntries.Clear();
             ClearSelectionRequested?.Invoke();
         }, outputScheduler: AvaloniaUiScheduler.Instance);
-
-        LoadRecentLogs();
-    }
-
-    private void LoadRecentLogs()
-    {
-        var recentLogs = _logCollector.GetRecentLogs(100);
-        foreach (var log in recentLogs)
-        {
-            LogEntries.Add(new LogEntryViewModel(log));
-        }
     }
 
     private void OnLogBatchReceived(System.Collections.Generic.IList<LogEntry> batch)
     {
-        if (_isUIUpdatesPaused) return;
-        
+        if (_isUIUpdatesPaused || Instance == null) return;
+
+        var added = false;
         foreach (var logEntry in batch)
         {
+            if (logEntry.ProcessName != Instance) continue;
             LogEntries.Add(new LogEntryViewModel(logEntry));
+            added = true;
         }
+        if (!added) return;
 
         const int maxLogs = 500;
         while (LogEntries.Count > maxLogs)
@@ -229,10 +230,11 @@ public class LogViewModel : ViewModelBase, IDisposable
     private void RefreshRecentLogs()
     {
         LogEntries.Clear();
-        var recentLogs = _logCollector.GetRecentLogs(500);
-        foreach (var log in recentLogs)
+        if (Instance == null) return;
+        // 收集器的缓冲是所有实例共用的, 先取全部再按实例挑
+        foreach (var log in _logCollector.GetRecentLogs(1000))
         {
-            LogEntries.Add(new LogEntryViewModel(log));
+            if (log.ProcessName == Instance) LogEntries.Add(new LogEntryViewModel(log));
         }
         
         if (AutoScroll)

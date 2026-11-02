@@ -5,33 +5,23 @@ using LuckyLilliaDesktop.Services;
 using LuckyLilliaDesktop.Utils;
 using Microsoft.Extensions.Logging;
 using System;
-using System.ComponentModel;
-using System.Linq;
 using System.Reactive;
-using System.Reactive.Linq;
 using System.Threading.Tasks;
 
 namespace LuckyLilliaDesktop.ViewModels;
 
 /// <summary>
-/// 主窗口 ViewModel
+/// 主窗口 ViewModel: 三个页面 (0 控制面板, 1 设置, 2 关于) + 主题切换.
 /// </summary>
 public class MainWindowViewModel : ViewModelBase
 {
     private readonly ILogger<MainWindowViewModel> _logger;
     private readonly IConfigManager _configManager;
-    private readonly IResourceMonitor _resourceMonitor;
 
     private int _selectedIndex;
-    private string _title = Constants.AppDisplayName;
     private string _themeMode = "system";
-    private bool _isMonitoringPaused;
 
-    public string Title
-    {
-        get => _title;
-        set => this.RaiseAndSetIfChanged(ref _title, value);
-    }
+    public string Title => Constants.AppDisplayName;
 
     public int SelectedIndex
     {
@@ -64,90 +54,57 @@ public class MainWindowViewModel : ViewModelBase
         _ => "切换主题"
     };
 
-    // 子页面 ViewModels
     public HomeViewModel HomeVM { get; }
-    public LogViewModel LogVM { get; }
-    public ConfigViewModel ConfigVM { get; }
-    public LLBotConfigViewModel LLBotConfigVM { get; }
-    public IntegrationWizardViewModel IntegrationWizardVM { get; }
+    public SettingsViewModel SettingsVM { get; }
     public AboutViewModel AboutVM { get; }
 
-    // 主题切换命令
     public ReactiveCommand<Unit, Unit> ToggleThemeCommand { get; }
 
     public MainWindowViewModel(
         HomeViewModel homeViewModel,
-        LogViewModel logViewModel,
-        ConfigViewModel configViewModel,
-        LLBotConfigViewModel llbotConfigViewModel,
-        IntegrationWizardViewModel integrationWizardViewModel,
+        SettingsViewModel settingsViewModel,
         AboutViewModel aboutViewModel,
         IConfigManager configManager,
-        IResourceMonitor resourceMonitor,
         ILogger<MainWindowViewModel> logger)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _configManager = configManager ?? throw new ArgumentNullException(nameof(configManager));
-        _resourceMonitor = resourceMonitor ?? throw new ArgumentNullException(nameof(resourceMonitor));
 
         HomeVM = homeViewModel ?? throw new ArgumentNullException(nameof(homeViewModel));
-        LogVM = logViewModel ?? throw new ArgumentNullException(nameof(logViewModel));
-        ConfigVM = configViewModel ?? throw new ArgumentNullException(nameof(configViewModel));
-        LLBotConfigVM = llbotConfigViewModel ?? throw new ArgumentNullException(nameof(llbotConfigViewModel));
-        IntegrationWizardVM = integrationWizardViewModel ?? throw new ArgumentNullException(nameof(integrationWizardViewModel));
+        SettingsVM = settingsViewModel ?? throw new ArgumentNullException(nameof(settingsViewModel));
         AboutVM = aboutViewModel ?? throw new ArgumentNullException(nameof(aboutViewModel));
 
-        // 加载保存的主题设置（异步初始化）
         _ = LoadThemeSettingsAsync();
 
-        // 监听 QQ 信息变化更新标题：未登录显示应用名，登录后显示昵称和 QQ 号
-        Observable.FromEventPattern<PropertyChangedEventHandler, PropertyChangedEventArgs>(
-                handler => homeViewModel.PropertyChanged += handler,
-                handler => homeViewModel.PropertyChanged -= handler)
-            .Where(args => args.EventArgs.PropertyName is nameof(HomeViewModel.QQUin) or nameof(HomeViewModel.QQNickname))
-            .Select(_ => (homeViewModel.QQUin, homeViewModel.QQNickname))
-            .StartWith((homeViewModel.QQUin, homeViewModel.QQNickname))
-            .Select(info => FormatTitle(info.QQUin, info.QQNickname))
-            .DistinctUntilChanged()
-            .ObserveOnUiThread()
-            .Subscribe(newTitle => Title = newTitle);
-
-        // 主题切换命令
         ToggleThemeCommand = ReactiveCommand.Create(ToggleTheme, outputScheduler: AvaloniaUiScheduler.Instance);
 
-        // 设置导航到日志页面的回调
-        homeViewModel.NavigateToLogs = () => SelectedIndex = 1;
+        // 设置页的主题下拉框是第二个入口, 切完同步回去; 标题栏按钮切换时也同步给它
+        settingsViewModel.ThemeModeChanged = mode =>
+        {
+            ThemeMode = NormalizeThemeMode(mode);
+            ApplyTheme();
+            _ = _configManager.SetSettingAsync("theme_mode", ThemeMode);
+            _logger.LogInformation("主题切换为: {Theme}", ThemeMode);
+        };
 
-        // 设置导航到关于页面的回调（用于更新）
-        homeViewModel.NavigateToAbout = () => SelectedIndex = 5;
-
-        // 下载完成后刷新版本信息
+        homeViewModel.NavigateToAbout = () => SelectedIndex = 2;
         homeViewModel.OnDownloadCompleted = async () => await AboutVM.LoadVersionsAsync();
 
-        // 更新完成后重启服务的回调
-        aboutViewModel.RestartServicesCallback = async () => await HomeVM.StartServicesAsync();
+        // 更新 LLBot 前后由控制面板统一停 / 起所有实例, 保持它们的状态一致
+        aboutViewModel.StopServicesCallback = () => HomeVM.StopAllForUpdateAsync();
+        aboutViewModel.RestartServicesCallback = () => HomeVM.ResumeAfterUpdateAsync();
 
         _logger.LogInformation("MainWindowViewModel 已初始化");
-    }
-
-    /// <summary>
-    /// uin 比 nickname 先到（见 ISelfInfoService / LLBot IPC），所以 nickname 还没来时先只显示 uin
-    /// </summary>
-    private static string FormatTitle(string? uin, string? nickname)
-    {
-        if (string.IsNullOrEmpty(uin)) return Constants.AppDisplayName;
-        return string.IsNullOrEmpty(nickname) ? uin : $"{nickname}({uin})";
     }
 
     private async Task LoadThemeSettingsAsync()
     {
         try
         {
-            // 先确保配置已加载
             await _configManager.LoadConfigAsync();
-
             ThemeMode = NormalizeThemeMode(_configManager.GetSetting("theme_mode", "system"));
             ApplyTheme();
+            SettingsVM.SyncThemeMode(ThemeMode);
         }
         catch (Exception ex)
         {
@@ -165,10 +122,8 @@ public class MainWindowViewModel : ViewModelBase
         };
 
         ApplyTheme();
-
-        // 保存主题设置
+        SettingsVM.SyncThemeMode(ThemeMode);
         _ = _configManager.SetSettingAsync("theme_mode", ThemeMode);
-
         _logger.LogInformation("主题切换为: {Theme}", ThemeMode);
     }
 
@@ -191,34 +146,4 @@ public class MainWindowViewModel : ViewModelBase
         "light" => "light",
         _ => "system"
     };
-
-    /// <summary>
-    /// 暂停监控以节省 CPU（窗口隐藏时调用）
-    /// </summary>
-    public void PauseMonitoring()
-    {
-        if (_isMonitoringPaused) return;
-        
-        _isMonitoringPaused = true;
-        _resourceMonitor.PauseMonitoring();
-        HomeVM.PauseUIUpdates();
-        LogVM.PauseUIUpdates();
-        
-        _logger.LogInformation("已暂停监控以节省 CPU");
-    }
-
-    /// <summary>
-    /// 恢复监控（窗口显示时调用）
-    /// </summary>
-    public void ResumeMonitoring()
-    {
-        if (!_isMonitoringPaused) return;
-        
-        _isMonitoringPaused = false;
-        _resourceMonitor.ResumeMonitoring();
-        HomeVM.ResumeUIUpdates();
-        LogVM.ResumeUIUpdates();
-        
-        _logger.LogInformation("已恢复监控");
-    }
 }

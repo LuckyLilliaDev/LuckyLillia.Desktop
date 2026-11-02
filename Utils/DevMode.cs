@@ -7,10 +7,8 @@ namespace LuckyLilliaDesktop.Utils;
 /// <summary>
 /// 开发模式。只由 app_settings.json 的 <c>dev</c> 开启, 没有对应的命令行开关。
 ///
-/// 作用: (1) 放宽 auth_token 的联网校验 —— 启动时不再向 manager-server 请求
-/// /api/sign/info, 手动输入 token 时也不校验; token 本身仍照常读写 data/auth_token.txt
-/// 并传给 PMHQ (--auth-token) / LLBot。(2) 启动 LLBot 时透传 <c>--dev</c>。
-/// 系统时间、版本门槛等其他启动检查不受影响。
+/// 作用: 启动 LLBot 时透传 <c>--dev</c> (LLBot 据此加载开发版原生组件、读 data/auth_token.dev.txt 并连本地 manager)。
+/// Desktop 自己不再碰 auth token (在 LLBot 的 WebUI 里录入); 系统时间、版本门槛等启动检查不受影响。
 /// </summary>
 internal static class DevMode
 {

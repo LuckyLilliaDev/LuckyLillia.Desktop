@@ -15,7 +15,6 @@ public static class Constants
     /// </summary>
     public static class NpmPackages
     {
-        public static string Pmhq => PlatformHelper.GetPlatformPackageName("pmhq-dist");
         public const string LLBot = "llonebot-dist";
         public static string Node => PlatformHelper.GetPlatformPackageName("llonebot-node");
         public static string FFmpeg => PlatformHelper.GetPlatformPackageName("llonebot-ffmpeg");
@@ -29,7 +28,6 @@ public static class Constants
     {
         public const string LLBot = "LLOneBot/LuckyLilliaBot";
         public const string App = "LLOneBot/LuckyLilliaDesktop.Avalonia";
-        public const string Pmhq = "linyuchen/pmhq";
     }
 
     /// <summary>
@@ -37,19 +35,11 @@ public static class Constants
     /// </summary>
     public static class DefaultPaths
     {
-        public const string PmhqDir = "bin/pmhq";
-        public static string PmhqExe => PlatformHelper.GetExecutablePath("bin/pmhq", $"pmhq-{PlatformHelper.PlatformIdentifier}");
         public const string LLBotDir = "bin/llbot";
         public const string LLBotScript = "bin/llbot/llbot.js";
         public static string NodeExe => PlatformHelper.GetExecutablePath("bin/llbot", "node");
         public static string FFmpegExe => PlatformHelper.GetExecutablePath("bin/llbot", "ffmpeg");
         public static string FFprobeExe => PlatformHelper.GetExecutablePath("bin/llbot", "ffprobe");
-
-        // QQ 相关路径
-        public const string QQDir = "bin/qq";
-        public static string QQExe => PlatformHelper.IsMacOS
-            ? "bin/qq/QQ.app/Contents/MacOS/QQ"
-            : PlatformHelper.GetExecutablePath("bin/qq", "QQ");
     }
 
     /// <summary>
@@ -73,13 +63,6 @@ public static class Constants
         "https://mirrors.huaweicloud.com/repository/npm",
         "https://mirrors.cloud.tencent.com/npm"
     };
-
-    /// <summary>
-    /// QQ 下载地址
-    /// </summary>
-    public static string QQDownloadUrl => PlatformHelper.IsMacOS
-        ? "https://github.com/LLOneBot/exe/releases/download/0.0.0/QQ-macos.tar.xz"
-        : "https://qqdl.gtimg.cn/qqfile/QQNT/9.9.33/beta/8cf72bb8/QQ9.9.33.51552_x64.exe";
 
     /// <summary>
     /// 超时设置

@@ -1,6 +1,8 @@
 using LuckyLilliaDesktop.Models;
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks;
@@ -144,6 +146,7 @@ public class ConfigManager : IConfigManager
             string stringValue => JsonValue.Create(stringValue),
             int intValue => JsonValue.Create(intValue),
             bool boolValue => JsonValue.Create(boolValue),
+            IEnumerable<string> strings => new JsonArray(strings.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray()),
             _ => throw new NotSupportedException($"不支持保存设置类型: {typeof(T).FullName}")
         };
     }

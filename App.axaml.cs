@@ -17,7 +17,6 @@ namespace LuckyLilliaDesktop;
 public partial class App : Application
 {
     public IServiceProvider Services { get; private set; } = null!;
-    private NativeMenuItem? _trayShowMenuItem;
 
     public override void Initialize()
     {
@@ -53,21 +52,19 @@ public partial class App : Application
         CleanupChildProcesses();
     }
 
-    private void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
+    private async void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
     {
-        Log.Information("检测到 Ctrl+C，清理子进程...");
-        CleanupChildProcesses();
+        e.Cancel = true;
+        await ExitApplicationAsync();
     }
 
     private void CleanupChildProcesses()
     {
         try
         {
-            var resourceMonitor = Services?.GetService<IResourceMonitor>();
             var processManager = Services?.GetService<IProcessManager>();
             
-            var qqPid = resourceMonitor?.QQPid;
-            processManager?.ForceKillAll(qqPid);
+            processManager?.ForceKillAll();
         }
         catch (Exception ex)
         {
@@ -95,38 +92,18 @@ public partial class App : Application
 
         // 核心服务（单例）
         services.AddSingleton<IConfigManager, ConfigManager>();
-        services.AddSingleton<IEmailService, EmailService>();
         services.AddSingleton<ILogCollector, LogCollector>();
         services.AddSingleton<IProcessManager, ProcessManager>();
-        services.AddSingleton<IResourceMonitor, ResourceMonitor>();
-        services.AddSingleton<ISelfInfoService, SelfInfoService>();
-        services.AddSingleton<IPmhqClient, PmhqClient>();
-        services.AddSingleton<IAuthTokenValidator, AuthTokenValidator>();
         services.AddSingleton<ISystemTimeChecker, SystemTimeChecker>();
-        services.AddSingleton<ILLBotIpcClient, LLBotIpcClient>();
         services.AddSingleton<IDownloadService, DownloadService>();
         services.AddSingleton<IUpdateChecker, UpdateChecker>();
         services.AddSingleton<IUpdateStateService, UpdateStateService>();
-        services.AddSingleton<IGitHubHelper, GitHubHelper>();
-        services.AddSingleton<IGitHubArchiveHelper, GitHubArchiveHelper>();
-        services.AddSingleton<IGitHubCLIHelper, GitHubCLIHelper>();
-        services.AddSingleton<IPythonHelper, PythonHelper>();
-        services.AddSingleton<IKoishiInstallService, KoishiInstallService>();
-        services.AddSingleton<IAstrBotInstallService, AstrBotInstallService>();
-        services.AddSingleton<IZhenxunInstallService, ZhenxunInstallService>();
-        services.AddSingleton<IDDBotInstallService, DDBotInstallService>();
-        services.AddSingleton<IYunzaiInstallService, YunzaiInstallService>();
-        services.AddSingleton<IZeroBotPluginInstallService, ZeroBotPluginInstallService>();
-        services.AddSingleton<IOpenClawInstallService, OpenClawInstallService>();
-        services.AddSingleton<IRedReplyInstallService, RedReplyInstallService>();
 
         // ViewModels（瞬态）
         services.AddTransient<MainWindowViewModel>();
         services.AddTransient<HomeViewModel>();
         services.AddTransient<LogViewModel>();
-        services.AddTransient<ConfigViewModel>();
-        services.AddTransient<LLBotConfigViewModel>();
-        services.AddTransient<IntegrationWizardViewModel>();
+        services.AddTransient<SettingsViewModel>();
         services.AddTransient<AboutViewModel>();
 
         // 日志
@@ -153,17 +130,6 @@ public partial class App : Application
                 desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
                 desktop.ShutdownRequested += OnShutdownRequested;
 
-                // 获取托盘菜单项引用
-                var trayIcons = TrayIcon.GetIcons(this);
-                if (trayIcons?.Count > 0)
-                {
-                    var menu = trayIcons[0].Menu;
-                    if (menu?.Items.Count > 0)
-                    {
-                        _trayShowMenuItem = menu.Items[0] as NativeMenuItem;
-                    }
-                }
-
                 // macOS: 主动显示并激活窗口
                 if (PlatformHelper.IsMacOS)
                 {
@@ -187,33 +153,10 @@ public partial class App : Application
         }
     }
 
-    public void UpdateTrayMenuText(string? nickname, string? uin)
+    private async void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e)
     {
-        if (_trayShowMenuItem == null) return;
-
-        var trayIcons = TrayIcon.GetIcons(this);
-        if (!string.IsNullOrEmpty(nickname) && !string.IsNullOrEmpty(uin))
-        {
-            _trayShowMenuItem.Header = $"{nickname}({uin})";
-            if (trayIcons?.Count > 0)
-            {
-                trayIcons[0].ToolTipText = $"{nickname}({uin})";
-            }
-            Log.Information("托盘菜单已更新: {Nickname}({Uin})", nickname, uin);
-        }
-        else
-        {
-            _trayShowMenuItem.Header = "显示主窗口";
-            if (trayIcons?.Count > 0)
-            {
-                trayIcons[0].ToolTipText = Constants.AppDisplayName;
-            }
-        }
-    }
-
-    private void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e)
-    {
-        ExitApplicationAsync();
+        e.Cancel = true;
+        await ExitApplicationAsync();
     }
 
     private void TrayIcon_Clicked(object? sender, EventArgs e)
@@ -234,45 +177,29 @@ public partial class App : Application
     /// <summary>
     /// 统一的应用退出方法
     /// </summary>
-    public Task ExitApplicationAsync()
+    private Task? _exitTask;
+    public Task ExitApplicationAsync() => _exitTask ??= ExitCoreAsync();
+
+    private async Task ExitCoreAsync()
     {
-        Log.Information("ExitApplicationAsync 被调用");
-        
+        Log.Information("应用正在退出，等待各实例清理原生会话");
+        var processManager = Services.GetService<IProcessManager>();
+        // WebView2 和实例互不相干, 并行收尾 (WebView 要先于进程退出正常关掉, 见 MainWindow.ShutdownWebViewAsync)
+        var webViewShutdown = (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow is MainWindow mainWindow
+            ? mainWindow.ShutdownWebViewAsync()
+            : Task.CompletedTask;
         try
         {
-            var resourceMonitor = Services.GetService<IResourceMonitor>();
-            var pmhqClient = Services.GetService<IPmhqClient>();
-            var processManager = Services.GetService<IProcessManager>();
-            
-            var qqPid = resourceMonitor?.QQPid;
-            
-            // 如果缓存没有 PID，尝试从 API 获取
-            if (!qqPid.HasValue && pmhqClient?.HasPort == true)
-            {
-                try
-                {
-                    var task = Task.Run(() => pmhqClient.FetchQQPidAsync());
-                    if (task.Wait(1000))
-                    {
-                        qqPid = task.Result;
-                    }
-                }
-                catch { }
-            }
-            
-            Log.Information("QQ PID: {Pid}", qqPid);
-            
-            // 使用统一的强制终止方法
-            processManager?.ForceKillAll(qqPid);
+            if (processManager != null) await processManager.StopAllAsync();
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "清理进程失败");
+            Log.Error(ex, "正常退出失败，强制清理实例进程树");
+            processManager?.ForceKillAll();
         }
-        
-        Log.Information("应用退出");
+        try { await webViewShutdown; }
+        catch (Exception ex) { Log.Warning(ex, "关闭 WebView2 失败"); }
         Environment.Exit(0);
-        return Task.CompletedTask;
     }
 
     /// <summary>

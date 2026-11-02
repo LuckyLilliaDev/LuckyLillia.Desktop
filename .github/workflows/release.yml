@@ -22,10 +22,15 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: |
+            10.0.x
+            8.0.x
 
       - name: Restore dependencies
         run: dotnet restore
+
+      - name: Verify Desktop host IPC and migration
+        run: dotnet test LuckyLilliaDesktop.Tests/LuckyLilliaDesktop.Tests.csproj --nologo
 
       - name: Setup MSVC dev environment
         uses: TheMrMilchmann/setup-msvc-dev@v3
@@ -100,10 +105,15 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: |
+            10.0.x
+            8.0.x
 
       - name: Restore dependencies
         run: dotnet restore
+
+      - name: Verify Desktop host IPC and migration
+        run: dotnet test LuckyLilliaDesktop.Tests/LuckyLilliaDesktop.Tests.csproj --nologo
 
       - name: Build macOS app
         run: |

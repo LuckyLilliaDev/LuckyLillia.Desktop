@@ -9,7 +9,6 @@ using System.IO;
 using System.Reactive;
 using System.Reactive.Linq;
 using System.Reflection;
-using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace LuckyLilliaDesktop.ViewModels;
@@ -21,34 +20,25 @@ public class AboutViewModel : ViewModelBase
     private readonly IUpdateChecker _updateChecker;
     private readonly IDownloadService _downloadService;
     private readonly IProcessManager _processManager;
-    private readonly IResourceMonitor _resourceMonitor;
     private readonly IUpdateStateService _updateStateService;
 
     private string? _pendingAppUpdateScript;
 
     // 对话框委托
     public Func<string, string, Task<bool>>? ConfirmDialog { get; set; }
-    
-    // 重启服务回调
+
+    // 更新前停服务 / 更新后重启服务, 由控制面板实现
+    public Func<Task>? StopServicesCallback { get; set; }
     public Func<Task>? RestartServicesCallback { get; set; }
 
     // GitHub 仓库地址
     private const string AppGitHubUrl = "https://github.com/LLOneBot/LuckyLilliaDesktop.Avalonia";
-    private const string PmhqGitHubUrl = "https://github.com/linyuchen/PMHQ";
     private const string LLBotGitHubUrl = "https://github.com/LLOneBot/LuckyLilliaBot";
     private const string QQGroupUrl = "https://qm.qq.com/q/4XrMj9iReU";
 
     // 应用信息
     public static string AppName => "Lucky Lillia Desktop";
     public string AppVersion { get; }
-
-    // PMHQ 版本
-    private string _pmhqVersion = "检测中...";
-    public string PmhqVersion
-    {
-        get => _pmhqVersion;
-        set => this.RaiseAndSetIfChanged(ref _pmhqVersion, value);
-    }
 
     // LLBot 版本
     private string _llbotVersion = "检测中...";
@@ -85,35 +75,6 @@ public class AboutViewModel : ViewModelBase
     {
         get => _appReleaseUrl;
         set => this.RaiseAndSetIfChanged(ref _appReleaseUrl, value);
-    }
-
-    // 更新状态 - PMHQ
-    private bool _pmhqIsLatest;
-    public bool PmhqIsLatest
-    {
-        get => _pmhqIsLatest;
-        set => this.RaiseAndSetIfChanged(ref _pmhqIsLatest, value);
-    }
-
-    private bool _pmhqHasUpdate;
-    public bool PmhqHasUpdate
-    {
-        get => _pmhqHasUpdate;
-        set => this.RaiseAndSetIfChanged(ref _pmhqHasUpdate, value);
-    }
-
-    private string _pmhqLatestVersion = string.Empty;
-    public string PmhqLatestVersion
-    {
-        get => _pmhqLatestVersion;
-        set => this.RaiseAndSetIfChanged(ref _pmhqLatestVersion, value);
-    }
-
-    private string _pmhqReleaseUrl = string.Empty;
-    public string PmhqReleaseUrl
-    {
-        get => _pmhqReleaseUrl;
-        set => this.RaiseAndSetIfChanged(ref _pmhqReleaseUrl, value);
     }
 
     // 更新状态 - LLBot
@@ -192,12 +153,10 @@ public class AboutViewModel : ViewModelBase
     // 命令
     public ReactiveCommand<Unit, Unit> CheckOrUpdateCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenAppReleaseCommand { get; }
-    public ReactiveCommand<Unit, Unit> OpenPmhqReleaseCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenLLBotReleaseCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenDocsCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenQQGroupCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenAppGitHubCommand { get; }
-    public ReactiveCommand<Unit, Unit> OpenPmhqGitHubCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenLLBotGitHubCommand { get; }
 
     public AboutViewModel(
@@ -206,7 +165,6 @@ public class AboutViewModel : ViewModelBase
         IUpdateChecker updateChecker,
         IDownloadService downloadService,
         IProcessManager processManager,
-        IResourceMonitor resourceMonitor,
         IUpdateStateService updateStateService)
     {
         _logger = logger;
@@ -214,7 +172,6 @@ public class AboutViewModel : ViewModelBase
         _updateChecker = updateChecker;
         _downloadService = downloadService;
         _processManager = processManager;
-        _resourceMonitor = resourceMonitor;
         _updateStateService = updateStateService;
 
         // 获取应用版本
@@ -229,12 +186,10 @@ public class AboutViewModel : ViewModelBase
 
         // 打开链接命令
         OpenAppReleaseCommand = ReactiveCommand.Create(() => OpenUrl(AppReleaseUrl), outputScheduler: AvaloniaUiScheduler.Instance);
-        OpenPmhqReleaseCommand = ReactiveCommand.Create(() => OpenUrl(PmhqReleaseUrl), outputScheduler: AvaloniaUiScheduler.Instance);
         OpenLLBotReleaseCommand = ReactiveCommand.Create(() => OpenUrl(LLBotReleaseUrl), outputScheduler: AvaloniaUiScheduler.Instance);
         OpenDocsCommand = ReactiveCommand.Create(() => OpenUrl("https://luckylillia.com"), outputScheduler: AvaloniaUiScheduler.Instance);
         OpenQQGroupCommand = ReactiveCommand.Create(() => OpenUrl(QQGroupUrl), outputScheduler: AvaloniaUiScheduler.Instance);
         OpenAppGitHubCommand = ReactiveCommand.Create(() => OpenUrl(AppGitHubUrl), outputScheduler: AvaloniaUiScheduler.Instance);
-        OpenPmhqGitHubCommand = ReactiveCommand.Create(() => OpenUrl(PmhqGitHubUrl), outputScheduler: AvaloniaUiScheduler.Instance);
         OpenLLBotGitHubCommand = ReactiveCommand.Create(() => OpenUrl(LLBotGitHubUrl), outputScheduler: AvaloniaUiScheduler.Instance);
 
         // 订阅共享更新状态
@@ -255,11 +210,6 @@ public class AboutViewModel : ViewModelBase
         AppReleaseUrl = state.AppReleaseUrl;
         AppIsLatest = !state.AppHasUpdate;
 
-        PmhqHasUpdate = state.PmhqHasUpdate;
-        PmhqLatestVersion = state.PmhqLatestVersion;
-        PmhqReleaseUrl = state.PmhqReleaseUrl;
-        PmhqIsLatest = !state.PmhqHasUpdate;
-
         LLBotHasUpdate = state.LLBotHasUpdate;
         LLBotLatestVersion = state.LLBotLatestVersion;
         LLBotReleaseUrl = state.LLBotReleaseUrl;
@@ -278,18 +228,6 @@ public class AboutViewModel : ViewModelBase
         {
             var config = await _configManager.LoadConfigAsync();
 
-            // 检测 PMHQ 版本
-            var pmhqPath = config.PmhqPath;
-            if (!string.IsNullOrEmpty(pmhqPath))
-            {
-                var pmhqVersion = await VersionDetector.DetectPmhqVersionAsync(pmhqPath, _logger);
-                PmhqVersion = pmhqVersion ?? "未知";
-            }
-            else
-            {
-                PmhqVersion = "未配置";
-            }
-
             // 检测 LLBot 版本
             var llbotPath = config.LLBotPath;
             if (!string.IsNullOrEmpty(llbotPath))
@@ -305,7 +243,6 @@ public class AboutViewModel : ViewModelBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "加载版本信息失败");
-            PmhqVersion = "检测失败";
             LLBotVersion = "检测失败";
         }
     }
@@ -332,8 +269,6 @@ public class AboutViewModel : ViewModelBase
         // 清除之前的更新状态
         AppIsLatest = false;
         AppHasUpdate = false;
-        PmhqIsLatest = false;
-        PmhqHasUpdate = false;
         LLBotIsLatest = false;
         LLBotHasUpdate = false;
         HasAnyUpdate = false;
@@ -354,27 +289,6 @@ public class AboutViewModel : ViewModelBase
             else
             {
                 AppIsLatest = true;
-            }
-
-            // 检查 PMHQ 更新
-            if (PmhqVersion != "未配置" && PmhqVersion != "未知" && PmhqVersion != "检测中...")
-            {
-                var pmhqUpdate = await _updateChecker.CheckPmhqUpdateAsync(PmhqVersion);
-                if (pmhqUpdate.HasUpdate)
-                {
-                    PmhqHasUpdate = true;
-                    PmhqLatestVersion = pmhqUpdate.LatestVersion;
-                    PmhqReleaseUrl = pmhqUpdate.ReleaseUrl;
-                    _logger.LogInformation("发现 PMHQ 新版本: {Version}", pmhqUpdate.LatestVersion);
-                }
-                else
-                {
-                    PmhqIsLatest = true;
-                }
-            }
-            else
-            {
-                PmhqIsLatest = true;
             }
 
             // 检查 LLBot 更新
@@ -399,7 +313,7 @@ public class AboutViewModel : ViewModelBase
             }
 
             // 更新按钮状态
-            HasAnyUpdate = AppHasUpdate || PmhqHasUpdate || LLBotHasUpdate;
+            HasAnyUpdate = AppHasUpdate || LLBotHasUpdate;
             CheckUpdateButtonText = HasAnyUpdate ? "立即更新" : "检查更新";
 
             _logger.LogInformation("更新检查完成");
@@ -424,7 +338,7 @@ public class AboutViewModel : ViewModelBase
         // 如果服务正在运行，弹出确认对话框
         if (wasRunning && ConfirmDialog != null)
         {
-            var confirmed = await ConfirmDialog("确认更新", "服务正在运行中，更新需要先停止服务。更新完成后将自动重启服务。\n\n确定要继续吗？");
+            var confirmed = await ConfirmDialog("确认更新", "LLBot 正在运行中，更新需要先停止它。更新完成后将自动重新启动。\n\n确定要继续吗？");
             if (!confirmed)
             {
                 _logger.LogInformation("用户取消更新");
@@ -435,10 +349,9 @@ public class AboutViewModel : ViewModelBase
         IsDownloadingUpdate = true;
         DownloadProgress = 0;
 
-        // 收集需要更新的组件，按顺序：LLBot → PMHQ → 管理器
+        // 收集需要更新的组件，按顺序：LLBot（含原生组件）→ 管理器
         var updates = new List<string>();
         if (LLBotHasUpdate) updates.Add("LLBot");
-        if (PmhqHasUpdate) updates.Add("PMHQ");
         if (AppHasUpdate) updates.Add("管理器");
 
         try
@@ -446,9 +359,10 @@ public class AboutViewModel : ViewModelBase
             // 如果有进程在运行，先停止
             if (wasRunning)
             {
-                DownloadStatus = "正在停止所有进程...";
-                _logger.LogInformation("更新前停止所有进程...");
-                await _processManager.StopAllAsync(_resourceMonitor.QQPid);
+                DownloadStatus = "正在停止 LLBot...";
+                _logger.LogInformation("更新前停止 LLBot...");
+                if (StopServicesCallback != null) await StopServicesCallback();
+                else await _processManager.StopAllAsync();
                 await Task.Delay(1000);
             }
 
@@ -474,16 +388,6 @@ public class AboutViewModel : ViewModelBase
                             LLBotHasUpdate = false;
                             LLBotIsLatest = true;
                             _updateStateService.ClearUpdate("LLBot");
-                        }
-                        break;
-
-                    case "PMHQ":
-                        success = await _downloadService.DownloadPmhqAsync(progress);
-                        if (success)
-                        {
-                            PmhqHasUpdate = false;
-                            PmhqIsLatest = true;
-                            _updateStateService.ClearUpdate("PMHQ");
                         }
                         break;
 
@@ -519,8 +423,8 @@ public class AboutViewModel : ViewModelBase
             else if (wasRunning && RestartServicesCallback != null)
             {
                 // 更新前服务在运行，自动重启
-                _logger.LogInformation("更新完成，自动重启服务...");
-                DownloadStatus = "正在重启服务...";
+                _logger.LogInformation("更新完成，自动重启 LLBot...");
+                DownloadStatus = "正在重新启动 LLBot...";
                 await Task.Delay(500);
                 await RestartServicesCallback();
             }
@@ -621,11 +525,10 @@ public class AboutViewModel : ViewModelBase
                 FileName = url,
                 UseShellExecute = true
             });
-            _logger.LogInformation("已打开链接: {Url}", url);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "打开链接失败: {Url}", url);
+            _logger.LogError(ex, "打开失败: {Url}", url);
         }
     }
 

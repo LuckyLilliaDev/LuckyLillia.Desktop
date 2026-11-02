@@ -7,12 +7,16 @@
 
     <!-- 应用程序信息 -->
     <ApplicationIcon>Assets/Icons/icon.ico</ApplicationIcon>
+    <!-- 清单里的 supportedOS 列表是 NativeControlHost (WebView2 宿主) 的硬需求: 没有它 Windows 按旧版兼容模式跑, 子窗口不能 WS_EX_LAYERED -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>LuckyLilliaDesktop</AssemblyName>
     <Product>Lucky Lillia Desktop</Product>
     <AssemblyTitle>Lucky Lillia Desktop</AssemblyTitle>
     <Description>幸运莉莉娅桌面端</Description>
     <Version>3.1.2</Version>
     <LangVersion>14</LangVersion>
+    <!-- Utils/WebView2 的 [GeneratedComInterface] 生成代码需要 unsafe -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <!-- 发布配置（仅在发布时使用） -->
@@ -37,7 +41,6 @@
 
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.14" />
-    <PackageReference Include="Avalonia.AvaloniaEdit" Version="11.4.1" />
     <PackageReference Include="Avalonia.Desktop" Version="11.3.14" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.14" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.14" />
@@ -55,9 +58,19 @@
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
     <PackageReference Include="Serilog.Extensions.Logging" Version="10.0.0" />
     <PackageReference Include="System.Reactive" Version="6.1.0" />
-    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="10.0.9" />
-    <PackageReference Include="MailKit" Version="4.17.0" />
     <PackageReference Include="VC-LTL" Version="5.3.1" />
     <PackageReference Include="YY-Thunks" Version="1.2.1" />
+
+    <!-- 只取 WebView2Loader 原生库: 托管包装 Microsoft.Web.WebView2.Core 走内置 COM 互操作, NativeAOT 不支持.
+         COM 接口在 Utils/WebView2 手写 ([GeneratedComInterface]), 见 doc/webview2.md -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" GeneratePathProperty="true"
+                      ExcludeAssets="compile;build;buildTransitive;contentFiles;analyzers" />
+  </ItemGroup>
+
+  <!-- NativeAOT 发布静态链接 WebView2LoaderStatic.lib, 发布物保持单 exe (CI 只打包 exe, 不带 WebView2Loader.dll) -->
+  <ItemGroup Condition="'$(PublishAot)' == 'true' and '$(RuntimeIdentifier)' == 'win-x64'">
+    <DirectPInvoke Include="WebView2Loader" />
+    <NativeLibrary Include="$(PkgMicrosoft_Web_WebView2)\build\native\x64\WebView2LoaderStatic.lib" />
+    <LinkerArg Include="version.lib" />
   </ItemGroup>
 </Project>

@@ -2,7 +2,7 @@
 
 ## 问题背景
 
-当 GUI 程序被任务管理器强制终止时，无法捕获到这个事件，导致子进程（PMHQ、LLBot、QQ 等）会残留在系统中。
+当 GUI 程序被任务管理器强制终止时，无法捕获到这个事件，导致子进程（LLBot 及它在 PMHQ 桥接模式下拉起的 QQ 等）会残留在系统中。
 
 ## 解决方案
 
@@ -58,19 +58,11 @@ info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
 #### 停止流程
 
 ```csharp
-public async Task StopAllAsync(int? qqPid = null)
+public async Task StopAllAsync()
 {
-    // 1. 停止 LLBot（完全等待）
-    await StopLLBotAsync();
-    
-    // 2. 停止 PMHQ（完全等待）
-    await StopPmhqAsync();
-    
-    // 3. 停止 QQ（完全等待）
-    if (qqPid.HasValue)
-    {
-        await KillProcessTreeAsync(qqPid.Value);
-    }
+    // 每个实例一个 LLBot 子进程, 并行停: 先向其控制台发 Ctrl+C (LLBot 当 SIGINT), 最多等 35 秒让它收拾原生会话
+    // (含它自己拉起的 QQ), 没退出再 KillProcessTreeAsync 兜底. Desktop 不单独杀 QQ.
+    await Task.WhenAll(RunningInstances.Select(StopInstanceAsync));
 }
 ```
 
@@ -186,3 +178,9 @@ try {
 
 - [Job Objects (Windows)](https://docs.microsoft.com/en-us/windows/win32/procthread/job-objects)
 - [JOBOBJECT_EXTENDED_LIMIT_INFORMATION](https://docs.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_extended_limit_information)
+
+## 对 WebView2 的影响
+
+主进程自己也在 Job 里, 所以它拉起的 WebView2 浏览器进程 (及其 GPU / 渲染 / 网络等子进程) 同样会在主进程退出时被直接杀掉.
+Chromium 的 cookie 库每 30 秒才提交一次, 硬杀会丢掉这期间写入的 cookie (WebUI 的登录态). 退出流程因此先正常关掉 WebView
+并等浏览器进程自己退出 (`MainWindow.ShutdownWebViewAsync`, 实测约 300 ms), 见 [webview2.md](webview2.md) "后台挂起与退出收尾".

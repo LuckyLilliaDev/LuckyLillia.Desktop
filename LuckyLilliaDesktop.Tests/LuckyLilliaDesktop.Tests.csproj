@@ -18,7 +18,7 @@
 
   <ItemGroup>
     <Compile Include="../Utils/StartupCommandLine.cs" Link="Utils\StartupCommandLine.cs" />
-    <Compile Include="../Utils/LLBotProtocol.cs" Link="Utils\LLBotProtocol.cs" />
+    <Compile Include="../Utils/LLBotWebUi.cs" Link="Utils\LLBotWebUi.cs" />
   </ItemGroup>
 
 </Project>

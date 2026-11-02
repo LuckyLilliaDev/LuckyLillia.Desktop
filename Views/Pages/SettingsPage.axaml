@@ -1,0 +1,244 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:LuckyLilliaDesktop.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="700"
+             x:Class="LuckyLilliaDesktop.Views.Pages.SettingsPage"
+             x:DataType="vm:SettingsViewModel">
+
+    <UserControl.Styles>
+        <Style Selector="Button">
+            <Setter Property="CornerRadius" Value="16"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Padding" Value="14,8"/>
+        </Style>
+        <Style Selector="Button:pointerover">
+            <Setter Property="Opacity" Value="0.92"/>
+        </Style>
+        <Style Selector="TextBox">
+            <Setter Property="CornerRadius" Value="14"/>
+            <Setter Property="Padding" Value="12,9"/>
+            <Setter Property="Background" Value="{DynamicResource CardBackgroundStrong}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}"/>
+        </Style>
+        <Style Selector="ComboBox">
+            <Setter Property="CornerRadius" Value="14"/>
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="MinWidth" Value="150"/>
+            <Setter Property="Background" Value="{DynamicResource CardBackgroundStrong}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}"/>
+        </Style>
+        <Style Selector="ToggleSwitch">
+            <Setter Property="OnContent" Value=""/>
+            <Setter Property="OffContent" Value=""/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style Selector="Border.card">
+            <Setter Property="Background" Value="{DynamicResource CardBackground}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="20"/>
+            <Setter Property="Padding" Value="24"/>
+            <Setter Property="BoxShadow" Value="0 18 48 0 #18E84D9C"/>
+        </Style>
+        <Style Selector="TextBlock.title">
+            <Setter Property="FontSize" Value="18"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+        </Style>
+        <Style Selector="TextBlock.label">
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+        </Style>
+        <Style Selector="TextBlock.hint">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+        <Style Selector="Border.divider">
+            <Setter Property="Height" Value="1"/>
+            <Setter Property="Background" Value="{DynamicResource BorderColor}"/>
+        </Style>
+    </UserControl.Styles>
+
+    <Panel>
+        <ScrollViewer>
+            <StackPanel Spacing="16" Margin="30,30,30,90">
+                <DockPanel>
+                    <PathIcon DockPanel.Dock="Left"
+                              Data="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61 l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41 h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.74,8.87 C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.07,0.94l-2.03,1.58 c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54 c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96 c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6 s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"
+                              Width="36" Height="36"
+                              Foreground="{DynamicResource PrimaryBrush}"
+                              Margin="0,0,12,0"/>
+                    <TextBlock Text="设置"
+                               FontSize="34"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource TextPrimary}"
+                               VerticalAlignment="Center"/>
+                </DockPanel>
+                <Border Height="2" Background="{DynamicResource PrimaryBrush}" CornerRadius="1"/>
+
+                <TextBlock Classes="hint"
+                           Text="LLBot 的登录方式、QQ 路径、协议、WebUI 端口、Auth Token 等都在控制面板的 WebUI 里修改；这里只有桌面端自己的选项。开关和下拉框即时生效，文本框改完点底部「保存」。"/>
+
+                <!-- 窗口 -->
+                <Border Classes="card">
+                    <StackPanel Spacing="16">
+                        <TextBlock Classes="title" Text="窗口"/>
+                        <Border Classes="divider"/>
+
+                        <DockPanel>
+                            <ComboBox DockPanel.Dock="Right" SelectedIndex="{Binding ThemeModeIndex}" VerticalAlignment="Center">
+                                <ComboBoxItem Content="跟随系统"/>
+                                <ComboBoxItem Content="浅色"/>
+                                <ComboBoxItem Content="深色"/>
+                            </ComboBox>
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="主题"/>
+                                <TextBlock Classes="hint" Text="标题栏右侧的按钮也可以切换"/>
+                            </StackPanel>
+                        </DockPanel>
+
+                        <DockPanel>
+                            <ToggleSwitch DockPanel.Dock="Right" IsChecked="{Binding MinimizeToTrayOnStart}"/>
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="启动时最小化到托盘"/>
+                                <TextBlock Classes="hint" Text="启动后不显示主窗口，点击托盘图标再打开"/>
+                            </StackPanel>
+                        </DockPanel>
+
+                        <DockPanel>
+                            <ComboBox DockPanel.Dock="Right" SelectedIndex="{Binding CloseBehaviorIndex}" VerticalAlignment="Center">
+                                <ComboBoxItem Content="每次询问"/>
+                                <ComboBoxItem Content="最小化到托盘"/>
+                                <ComboBoxItem Content="退出程序"/>
+                            </ComboBox>
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="点击关闭按钮时"/>
+                                <TextBlock Classes="hint" Text="退出程序会一并停止 LLBot；窗口大小和位置会自动记住"/>
+                            </StackPanel>
+                        </DockPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- 启动 -->
+                <Border Classes="card">
+                    <StackPanel Spacing="16">
+                        <TextBlock Classes="title" Text="启动"/>
+                        <Border Classes="divider"/>
+
+                        <DockPanel IsVisible="{Binding IsStartupSupported}">
+                            <ToggleSwitch DockPanel.Dock="Right" IsChecked="{Binding StartupEnabled}"/>
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="开机自启"/>
+                                <TextBlock Classes="hint" Text="登录 Windows 后自动运行本程序并拉起 LLBot（写入当前用户的注册表 Run 项，不需要管理员权限）"/>
+                            </StackPanel>
+                        </DockPanel>
+
+                        <StackPanel Spacing="10" IsVisible="{Binding IsStartupCommandSupported}">
+                            <DockPanel>
+                                <ToggleSwitch DockPanel.Dock="Right" IsChecked="{Binding StartupCommandEnabled}"/>
+                                <StackPanel VerticalAlignment="Center" Spacing="2">
+                                    <TextBlock Classes="label" Text="LLBot 启动后执行命令"/>
+                                    <TextBlock Classes="hint" Text="WebUI 就绪后在新的命令行窗口里执行，可用来拉起依赖 LLBot 的其他程序"/>
+                                </StackPanel>
+                            </DockPanel>
+                            <TextBox Text="{Binding StartupCommand}"
+                                     Watermark="例如: D:\bots\start.bat"
+                                     IsEnabled="{Binding StartupCommandEnabled}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- LLBot 运行环境 -->
+                <Border Classes="card">
+                    <StackPanel Spacing="16">
+                        <TextBlock Classes="title" Text="LLBot 运行环境"/>
+                        <Border Classes="divider"/>
+                        <TextBlock Classes="hint" Text="这些改动在下次启动实例时生效（控制面板里重启实例即可）。实例的新建 / 删除 / 随桌面端启动在控制面板的实例菜单里。"/>
+
+                        <StackPanel Spacing="6">
+                            <TextBlock Classes="label" Text="Node.js 路径"/>
+                            <TextBlock Classes="hint" Text="需要 Node.js 24 或更高；留空或文件不存在时依次尝试系统 PATH、bin/llbot/node.exe，都没有就自动下载"/>
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="浏览" Command="{Binding BrowseNodeCommand}" Margin="8,0,0,0"/>
+                                <TextBox Text="{Binding NodePath}" Watermark="bin/llbot/node.exe"/>
+                            </DockPanel>
+                        </StackPanel>
+
+                        <StackPanel Spacing="6">
+                            <TextBlock Classes="label" Text="LLBot 脚本路径"/>
+                            <TextBlock Classes="hint" Text="llbot.js 所在位置；文件不存在时自动下载到 bin/llbot"/>
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="浏览" Command="{Binding BrowseLLBotCommand}" Margin="8,0,0,0"/>
+                                <TextBox Text="{Binding LLBotPath}" Watermark="bin/llbot/llbot.js"/>
+                            </DockPanel>
+                        </StackPanel>
+
+                        <DockPanel>
+                            <ComboBox DockPanel.Dock="Right" SelectedIndex="{Binding ServerRegionIndex}" VerticalAlignment="Center">
+                                <ComboBoxItem Content="国外线路"/>
+                                <ComboBoxItem Content="国内线路"/>
+                            </ComboBox>
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="服务器线路"/>
+                                <TextBlock Classes="hint" Text="LLBot 连接授权服务的线路，国内线路会给 LLBot 传 --cdn china"/>
+                            </StackPanel>
+                        </DockPanel>
+
+                        <StackPanel Spacing="6">
+                            <TextBlock Classes="label" Text="HTTP 代理"/>
+                            <TextBlock Classes="hint" Text="以 HTTP_PROXY / HTTPS_PROXY 环境变量传给 LLBot，留空不用代理"/>
+                            <TextBox Text="{Binding HttpProxy}" Watermark="http://127.0.0.1:7890"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- 目录 -->
+                <Border Classes="card">
+                    <StackPanel Spacing="12">
+                        <TextBlock Classes="title" Text="目录"/>
+                        <Border Classes="divider"/>
+                        <TextBlock Classes="hint" Text="配置 app_settings.json、日志和 bin/llbot 下的 LLBot 都在程序目录里；排查问题先看日志目录里最新的文件。"/>
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <Button Command="{Binding OpenLogsCommand}" Content="打开日志目录"/>
+                            <Button Command="{Binding OpenWorkingDirectoryCommand}" Content="打开程序目录"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- 底部悬浮保存条: 只管文本框的草稿 -->
+        <Border HorizontalAlignment="Center"
+                VerticalAlignment="Bottom"
+                Margin="0,0,0,20"
+                Padding="8,6,8,6"
+                CornerRadius="20"
+                Background="{DynamicResource CardBackgroundStrong}"
+                BorderBrush="{DynamicResource BorderColor}"
+                BorderThickness="1"
+                BoxShadow="0 10 30 0 #22E84D9C">
+            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                <TextBlock Text="有未保存的修改"
+                           IsVisible="{Binding HasUnsavedChanges}"
+                           FontSize="13"
+                           Foreground="{DynamicResource WarningColor}"
+                           VerticalAlignment="Center"
+                           Margin="8,0,0,0"/>
+                <TextBlock Text="{Binding SaveMessage}"
+                           IsVisible="{Binding HasSaveMessage}"
+                           FontSize="13"
+                           Foreground="{DynamicResource TextSecondary}"
+                           VerticalAlignment="Center"
+                           Margin="8,0,0,0"/>
+                <Button Classes="ActionButton"
+                        Command="{Binding SaveCommand}"
+                        IsEnabled="{Binding HasUnsavedChanges}"
+                        Padding="24,10"
+                        Content="保存"/>
+            </StackPanel>
+        </Border>
+    </Panel>
+</UserControl>

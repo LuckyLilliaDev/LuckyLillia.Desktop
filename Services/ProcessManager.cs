@@ -2,14 +2,12 @@ using LuckyLilliaDesktop.Models;
 using LuckyLilliaDesktop.Utils;
 using Microsoft.Extensions.Logging;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,55 +15,87 @@ using System.Threading.Tasks;
 namespace LuckyLilliaDesktop.Services;
 
 /// <summary>
-/// 进程管理服务完整实现
+/// LLBot 实例进程管理: 每个实例一个 Node 进程. 优雅停止 = 向它的控制台发 Ctrl+C (LLBot 处理 SIGINT 后自己退出),
+/// 超时再进程树兜底; Windows Job Object 兜底 Desktop 崩溃; LL_PARENT_PID 让 LLBot 在 Desktop 消失时自己退出.
 /// </summary>
-public class ProcessManager : IProcessManager, IDisposable
+public partial class ProcessManager : IProcessManager, IDisposable
 {
+    private sealed class Entry
+    {
+        public required Process Process { get; init; }
+        public ProcessStatus Status { get; set; }
+        public int? ExitCode { get; set; }
+        public CancellationTokenSource MonitorCts { get; } = new();
+    }
+
     private readonly ILogger<ProcessManager> _logger;
     private readonly ILogCollector _logCollector;
-    private static readonly ConcurrentDictionary<int, string> _instanceNameCache = new();
-    private static readonly ConcurrentDictionary<int, (DateTime Time, TimeSpan CpuTime)> _cpuSampleCache = new();
-    private static readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = true };
-
-    private static readonly object _processTreeCacheLock = new();
-    private static DateTime _childrenMapCacheTimeUtc;
-    private static Dictionary<int, List<int>>? _childrenMapCache;
+    private readonly Dictionary<string, Entry> _entries = new();
+    private readonly object _entriesLock = new();
+    // 启动 / 停止串行化, 端口分配和状态变化才不会交错
+    private readonly SemaphoreSlim _lifecycle = new(1, 1);
 
     // Job Object 句柄，用于自动清理子进程
     private static IntPtr _jobHandle = IntPtr.Zero;
 
-    private Process? _pmhqProcess;
-    private Process? _llbotProcess;
-    private ProcessStatus _pmhqStatus = ProcessStatus.Stopped;
-    private ProcessStatus _llbotStatus = ProcessStatus.Stopped;
-
-    private CancellationTokenSource? _monitorCts;
-    private Task? _pmhqMonitorTask;
-    private Task? _llbotMonitorTask;
-
-    /// <summary>
-    /// PMHQ 使用的端口号
-    /// </summary>
-    public int? PmhqPort { get; private set; }
-
-    /// <summary>
-    /// 是否有任何进程在运行
-    /// </summary>
-    public bool IsAnyProcessRunning =>
-        _pmhqStatus == ProcessStatus.Running || _llbotStatus == ProcessStatus.Running;
-
-    public event EventHandler<ProcessStatus>? ProcessStatusChanged;
+    public event EventHandler<InstanceStatusChangedEventArgs>? StatusChanged;
 
     public ProcessManager(ILogger<ProcessManager> logger, ILogCollector logCollector)
     {
         _logger = logger;
         _logCollector = logCollector;
 
-        // 初始化 Job Object（仅在 Windows 上）
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             InitializeJobObject();
         }
+    }
+
+    public bool IsAnyProcessRunning
+    {
+        get
+        {
+            lock (_entriesLock) return _entries.Values.Any(e => e.Status is ProcessStatus.Running or ProcessStatus.Starting);
+        }
+    }
+
+    public IReadOnlyList<string> RunningInstances
+    {
+        get
+        {
+            lock (_entriesLock) return _entries.Where(p => p.Value.Status is ProcessStatus.Running or ProcessStatus.Starting).Select(p => p.Key).ToList();
+        }
+    }
+
+    public ProcessStatus GetStatus(string instance)
+    {
+        lock (_entriesLock) return _entries.TryGetValue(instance, out var entry) ? entry.Status : ProcessStatus.Stopped;
+    }
+
+    public int? GetPid(string instance)
+    {
+        lock (_entriesLock)
+        {
+            if (!_entries.TryGetValue(instance, out var entry)) return null;
+            try { return entry.Process.HasExited ? null : entry.Process.Id; }
+            catch (InvalidOperationException) { return null; }
+        }
+    }
+
+    public int? GetExitCode(string instance)
+    {
+        lock (_entriesLock) return _entries.TryGetValue(instance, out var entry) ? entry.ExitCode : null;
+    }
+
+    private Entry? GetEntry(string instance)
+    {
+        lock (_entriesLock) return _entries.GetValueOrDefault(instance);
+    }
+
+    private void SetStatus(string instance, Entry entry, ProcessStatus status)
+    {
+        entry.Status = status;
+        StatusChanged?.Invoke(this, new InstanceStatusChangedEventArgs(instance, status, entry.ExitCode));
     }
 
     /// <summary>
@@ -75,7 +105,6 @@ public class ProcessManager : IProcessManager, IDisposable
     {
         try
         {
-            // 创建 Job Object
             _jobHandle = CreateJobObject(IntPtr.Zero, null);
             if (_jobHandle == IntPtr.Zero)
             {
@@ -111,7 +140,6 @@ public class ProcessManager : IProcessManager, IDisposable
                 Marshal.FreeHGlobal(extendedInfoPtr);
             }
 
-            // 将当前进程加入 Job Object
             var currentProcess = Process.GetCurrentProcess();
             if (!AssignProcessToJobObject(_jobHandle, currentProcess.Handle))
             {
@@ -129,12 +157,6 @@ public class ProcessManager : IProcessManager, IDisposable
         }
     }
 
-    // 日志脱敏: PMHQ 命令行含 --auth-token / --api-token 等凭证, 直接打印会落进
-    // 落盘日志 (logs/*.log) 和 UI 日志页, 造成凭证泄露。仅脱敏日志展示, 不影响实际传参。
-    private static readonly Regex SecretArgRegex = new(@"(--(?:auth|api)-token=)\S+");
-
-    private static string MaskSecrets(string command) => SecretArgRegex.Replace(command, "$1***");
-
     // 代理 URL 可能带认证信息 (http://user:pass@host:port), 日志里隐去凭证部分
     private static readonly Regex ProxyCredentialRegex = new(@"://[^@/\s]+@");
 
@@ -142,495 +164,127 @@ public class ProcessManager : IProcessManager, IDisposable
 
     private static readonly string[] ProxyEnvNames = { "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy" };
 
-    // UseShellExecute = true 时临时改当前进程环境变量, 需要串行化避免并发启动互相污染
-    private static readonly object _proxyEnvLock = new();
-
-    /// <summary>
-    /// 启动进程, 非空代理以 HTTP_PROXY/HTTPS_PROXY 环境变量传入。
-    /// 大小写各设一遍: Windows 环境变量不区分大小写 (等于只写一个), Unix 上部分程序只认小写。
-    /// </summary>
-    private Process? StartProcessWithProxy(ProcessStartInfo startInfo, string? httpProxy)
+    public async Task<bool> StartInstanceAsync(string instance, LLBotLaunchOptions options)
     {
-        var proxy = string.IsNullOrWhiteSpace(httpProxy) ? null : httpProxy.Trim();
-        if (proxy == null)
-        {
-            return Process.Start(startInfo);
-        }
-
-        _logger.LogInformation("已设置 HTTP 代理环境变量: {Proxy}", MaskProxyCredentials(proxy));
-
-        if (!startInfo.UseShellExecute)
-        {
-            foreach (var name in ProxyEnvNames)
-            {
-                startInfo.Environment[name] = proxy;
-            }
-            return Process.Start(startInfo);
-        }
-
-        // UseShellExecute = true (macOS bash / Windows 调试模式 cmd) 不允许改 startInfo.Environment,
-        // 改为临时设置当前进程环境变量让子进程继承, 启动后立即还原.
-        //
-        // Windows 环境变量大小写不敏感, HTTP_PROXY / http_proxy 是同一个变量. 保存 / 还原
-        // 必须先"整体读旧值", 再"整体写代理"; 还原按倒序 -- 最后一次写回的是最早保存的原值,
-        // 即物理变量原始状态. 若把 Get + Set 交错做, i=0 写 HTTP_PROXY=proxy 后, i=2 读到的
-        // http_proxy 就是 proxy 而非原值, finally 里再按同序 Set 回去, 就把变量永久污染成 proxy.
-        lock (_proxyEnvLock)
-        {
-            var saved = new string?[ProxyEnvNames.Length];
-            for (int i = 0; i < ProxyEnvNames.Length; i++)
-            {
-                saved[i] = Environment.GetEnvironmentVariable(ProxyEnvNames[i]);
-            }
-            for (int i = 0; i < ProxyEnvNames.Length; i++)
-            {
-                Environment.SetEnvironmentVariable(ProxyEnvNames[i], proxy);
-            }
-            try
-            {
-                return Process.Start(startInfo);
-            }
-            finally
-            {
-                for (int i = ProxyEnvNames.Length - 1; i >= 0; i--)
-                {
-                    Environment.SetEnvironmentVariable(ProxyEnvNames[i], saved[i]);
-                }
-            }
-        }
+        await _lifecycle.WaitAsync();
+        try { return await StartInstanceCoreAsync(instance, options); }
+        finally { _lifecycle.Release(); }
     }
 
-    // QQ 由 PMHQ 启动: qqPath 写入 pmhq_config.json 的 qq_path (见 UpdatePmhqConfigAsync),
-    // PMHQ find_existing_qq_pid 找不到已运行的 QQ 时按 qq_path 自行拉起 (Desktop 不再单独启动 QQ).
-    // authToken 作为 --auth-token 传给 PMHQ (PMHQ 必填, 缺则启动即退).
-    public async Task<bool> StartPmhqAsync(string pmhqPath, string qqPath, string autoLoginQQ, string authToken, bool debug = false, string? httpProxy = null, bool useChinaCdn = false)
+    private async Task<bool> StartInstanceCoreAsync(string instance, LLBotLaunchOptions options)
     {
-        try
+        if (GetStatus(instance) is ProcessStatus.Running or ProcessStatus.Starting or ProcessStatus.Stopping)
         {
-            if (_pmhqStatus == ProcessStatus.Running)
-            {
-                _logger.LogWarning("PMHQ 已在运行中");
-                return false;
-            }
-
-            // 验证路径
-            if (!File.Exists(pmhqPath))
-            {
-                _logger.LogError("PMHQ 可执行文件不存在: {Path}", pmhqPath);
-                return false;
-            }
-
-            _pmhqStatus = ProcessStatus.Starting;
-            ProcessStatusChanged?.Invoke(this, _pmhqStatus);
-
-            // 获取工作目录
-            var workingDir = Path.GetDirectoryName(pmhqPath) ?? Environment.CurrentDirectory;
-
-            // 动态获取可用端口
-            PmhqPort = PortHelper.GetAvailablePort();
-            _logger.LogInformation("PMHQ 使用端口: {Port}", PmhqPort);
-
-            // 如果指定了 QQ 路径，更新 PMHQ 配置文件
-            if (!string.IsNullOrEmpty(qqPath) && File.Exists(qqPath))
-            {
-                await UpdatePmhqConfigAsync(workingDir, qqPath);
-            }
-
-            ProcessStartInfo startInfo;
-
-            if (PlatformHelper.IsMacOS)
-            {
-                // macOS: 转换为绝对路径
-                var absPmhqPath = Path.GetFullPath(pmhqPath);
-
-                // 先确保 pmhq 有可执行权限
-                try
-                {
-                    var chmodPsi = new ProcessStartInfo
-                    {
-                        FileName = "chmod",
-                        Arguments = $"+x \"{absPmhqPath}\"",
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
-                    using var chmodProc = Process.Start(chmodPsi);
-                    chmodProc?.WaitForExit();
-                    _logger.LogInformation("已设置 PMHQ 可执行权限: {Path}", absPmhqPath);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "设置 PMHQ 可执行权限失败");
-                }
-
-                // 构建参数字符串
-                var args = new List<string> { $"--port={PmhqPort}" };
-                if (!string.IsNullOrEmpty(authToken))
-                    args.Add($"--auth-token={authToken}");
-                if (!string.IsNullOrEmpty(autoLoginQQ))
-                    args.Add($"--qq={autoLoginQQ}");
-                if (debug)
-                {
-                    args.Add("--debug=true");
-                    args.Add("--qq-console");
-                }
-                if (useChinaCdn)
-                    args.Add("--cdn china");
-
-                var argsString = string.Join(" ", args);
-
-                // macOS 使用 bash 执行，这样可以正确处理环境变量和 GUI 应用启动
-                // 使用绝对路径避免 "command not found" 错误
-                // 使用 UseShellExecute = true 避免 QQ 继承已关闭的标准流导致 EPIPE 错误
-                startInfo = new ProcessStartInfo
-                {
-                    FileName = "/bin/bash",
-                    Arguments = $"-c \"\\\"{absPmhqPath}\\\" {argsString}\"",
-                    WorkingDirectory = workingDir,
-                    UseShellExecute = true,
-                    CreateNoWindow = false  // macOS 上 UseShellExecute = true 时此选项无效
-                };
-
-                var fullCommand = $"{absPmhqPath} {argsString}";
-                _logger.LogInformation("启动 PMHQ 完整命令: {Command}", MaskSecrets(fullCommand));
-                _logger.LogInformation("工作目录: {WorkingDir}", workingDir);
-            }
-            else
-            {
-                // Windows
-                if (debug)
-                {
-                    // 调试模式：用 cmd.exe 包装强制弹出控制台窗口，QQ 的输出会显示在这里
-                    var absPmhqPath = Path.GetFullPath(pmhqPath);
-                    var args = new List<string> { $"--port={PmhqPort}" };
-                    if (!string.IsNullOrEmpty(authToken))
-                        args.Add($"--auth-token={authToken}");
-                    if (!string.IsNullOrEmpty(autoLoginQQ))
-                        args.Add($"--qq={autoLoginQQ}");
-                    args.Add("--debug=true");
-                    args.Add("--qq-console");
-                    if (useChinaCdn)
-                        args.Add("--cdn china");
-
-                    var argsString = string.Join(" ", args);
-                    startInfo = new ProcessStartInfo
-                    {
-                        FileName = "cmd.exe",
-                        Arguments = $"/k \"\"{absPmhqPath}\" {argsString}\"",
-                        WorkingDirectory = workingDir,
-                        UseShellExecute = true,
-                        CreateNoWindow = false
-                    };
-
-                    var fullCommand = $"{absPmhqPath} {argsString}";
-                    _logger.LogInformation("启动 PMHQ 完整命令 (调试模式): {Command}", MaskSecrets(fullCommand));
-                    _logger.LogInformation("工作目录: {WorkingDir}", workingDir);
-                }
-                else
-                {
-                    startInfo = new ProcessStartInfo
-                    {
-                        FileName = pmhqPath,
-                        WorkingDirectory = workingDir,
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        CreateNoWindow = true,
-                        StandardOutputEncoding = Encoding.UTF8,
-                        StandardErrorEncoding = Encoding.UTF8
-                    };
-
-                    // 添加端口参数
-                    startInfo.ArgumentList.Add($"--port={PmhqPort}");
-
-                    // auth_token (PMHQ --auth-token 必填)
-                    if (!string.IsNullOrEmpty(authToken))
-                    {
-                        startInfo.ArgumentList.Add($"--auth-token={authToken}");
-                    }
-
-                    // 如果指定了自动登录QQ号，添加 --qq 参数
-                    if (!string.IsNullOrEmpty(autoLoginQQ))
-                    {
-                        startInfo.ArgumentList.Add($"--qq={autoLoginQQ}");
-                    }
-
-                    // 国内线路: --cdn china (ArgumentList 每项一个 arg, 故拆成两项)
-                    if (useChinaCdn)
-                    {
-                        startInfo.ArgumentList.Add("--cdn");
-                        startInfo.ArgumentList.Add("china");
-                    }
-
-                    var fullCommand = $"{pmhqPath} {string.Join(" ", startInfo.ArgumentList)}";
-                    _logger.LogInformation("启动 PMHQ 完整命令: {Command}", MaskSecrets(fullCommand));
-                    _logger.LogInformation("工作目录: {WorkingDir}", workingDir);
-                }
-            }
-
-            _pmhqProcess = StartProcessWithProxy(startInfo, httpProxy);
-
-            if (_pmhqProcess == null)
-            {
-                _logger.LogError("无法启动 PMHQ 进程");
-                _pmhqStatus = ProcessStatus.Error;
-                ProcessStatusChanged?.Invoke(this, _pmhqStatus);
-                return false;
-            }
-
-            // Windows 上尽早附加日志收集，避免 PMHQ 很快退出时丢失输出
-            // macOS 上 UseShellExecute = true，无法附加日志收集
-            // 调试模式下 PMHQ 有独立控制台，stdout 未重定向，无法附加
-            if (PlatformHelper.IsWindows && !debug)
-            {
-                _logCollector.AttachProcess("PMHQ", _pmhqProcess);
-            }
-
-            // 等待一小段时间确认进程启动
-            await Task.Delay(500);
-
-            // 检查进程是否立即退出
-            if (_pmhqProcess.HasExited)
-            {
-                var exitCode = _pmhqProcess.ExitCode;
-                // PMHQ 启动 QQ 后会正常退出（返回码 0），这是预期行为
-                // PMHQ 会先启动 QQ 进程，然后自己退出，但 HTTP API 仍在运行（由 QQ 提供）
-                if (exitCode == 0)
-                {
-                    _logger.LogInformation("PMHQ 进程正常退出（这是预期行为），返回码: {ExitCode}", exitCode);
-                    _logger.LogInformation("PMHQ 已启动 QQ，HTTP API 由 QQ 进程提供");
-
-                    // PMHQ 可能在退出前输出了日志；给日志读取线程一点时间把缓冲读完
-                    // 然后分离并释放进程对象（不影响后续状态机，仍视为 Running）
-                    var exitedProcess = _pmhqProcess;
-                    _pmhqProcess = null;
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            if (PlatformHelper.IsWindows)
-                            {
-                                await Task.Delay(300);
-                                _logCollector.DetachProcess("PMHQ");
-                            }
-                        }
-                        catch
-                        {
-                            // ignore
-                        }
-                        finally
-                        {
-                            try { exitedProcess.Dispose(); } catch { }
-                        }
-                    });
-
-                    _pmhqStatus = ProcessStatus.Running;
-                    ProcessStatusChanged?.Invoke(this, _pmhqStatus);
-                    return true;
-                }
-                else
-                {
-                    _logger.LogError("PMHQ 进程异常退出，返回码: {ExitCode}", exitCode);
-
-                    if (PlatformHelper.IsWindows)
-                    {
-                        _logCollector.DetachProcess("PMHQ");
-                    }
-                    _pmhqProcess.Dispose();
-                    _pmhqProcess = null;
-                    _pmhqStatus = ProcessStatus.Error;
-                    ProcessStatusChanged?.Invoke(this, _pmhqStatus);
-                    return false;
-                }
-            }
-
-            _pmhqStatus = ProcessStatus.Running;
-            ProcessStatusChanged?.Invoke(this, _pmhqStatus);
-
-            // 启动监控
-            _monitorCts = new CancellationTokenSource();
-            _pmhqMonitorTask = MonitorProcessAsync(_pmhqProcess, "PMHQ", _monitorCts.Token);
-
-            _logger.LogInformation("PMHQ 启动成功, PID: {Pid}", _pmhqProcess.Id);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "��动 PMHQ 失败");
-            _pmhqStatus = ProcessStatus.Error;
-            ProcessStatusChanged?.Invoke(this, _pmhqStatus);
+            _logger.LogWarning("实例 {Instance} 已在运行中", instance);
             return false;
         }
-    }
 
-    /// <summary>
-    /// 更新 PMHQ 目录下的 pmhq_config.json 配置文件
-    /// </summary>
-    private async Task UpdatePmhqConfigAsync(string pmhqDir, string qqPath)
-    {
-        var configPath = Path.Combine(pmhqDir, "pmhq_config.json");
-        var absQqPath = Path.GetFullPath(qqPath);
-
-        try
+        if (!File.Exists(options.NodePath))
         {
-            JsonObject? config = null;
-
-            // 读取现有配置
-            if (File.Exists(configPath))
-            {
-                var json = await File.ReadAllTextAsync(configPath);
-                config = JsonNode.Parse(json)?.AsObject();
-            }
-
-            config ??= new JsonObject();
-            config["qq_path"] = absQqPath;
-
-            // 写回配置
-            var newJson = config.ToJsonString(_jsonOptions);
-            await File.WriteAllTextAsync(configPath, newJson);
-
-            _logger.LogInformation("已更新 PMHQ 配置文件 qq_path: {QQPath}", absQqPath);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "更新 PMHQ 配置文件失败");
-        }
-    }
-
-    public async Task<bool> StartLLBotAsync(string nodePath, string scriptPath, string? ipcPipeName = null, string? loginUin = null, string? httpProxy = null, bool useChinaCdn = false, string? protocol = null)
-    {
-        try
-        {
-            if (_llbotStatus == ProcessStatus.Running)
-            {
-                _logger.LogWarning("LLBot 已在运行中");
-                return false;
-            }
-
-            if (!File.Exists(nodePath))
-            {
-                _logger.LogError("Node.js 可执行文件不存在: {Path}", nodePath);
-                return false;
-            }
-
-            if (!File.Exists(scriptPath))
-            {
-                _logger.LogError("LLBot 脚本不存在: {Path}", scriptPath);
-                return false;
-            }
-
-            _llbotStatus = ProcessStatus.Starting;
-            ProcessStatusChanged?.Invoke(this, _llbotStatus);
-
-            var workingDir = Path.GetDirectoryName(scriptPath) ?? Environment.CurrentDirectory;
-            var scriptFileName = Path.GetFileName(scriptPath);
-
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = nodePath,
-                WorkingDirectory = workingDir,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            };
-
-            startInfo.Environment["NODE_SKIP_PLATFORM_CHECK"] = "1";
-            startInfo.Environment["FORCE_COLOR"] = "3";
-
-            // LLBot 通过这个环境变量连接 Desktop 的命名管道 (仅 Windows)
-            if (!string.IsNullOrEmpty(ipcPipeName))
-            {
-                startInfo.Environment["LL_IPC_PIPE"] = ipcPipeName;
-            }
-
-            // 添加 Node.js 参数
-            startInfo.ArgumentList.Add("--enable-source-maps");
-            startInfo.ArgumentList.Add("--disable-warning=ExperimentalWarning");
-            startInfo.ArgumentList.Add(scriptFileName);
-
-            // 传给 LLBot 脚本的参数 (都放在 -- 之后)
-            // PmhqPort 有值 = 非 headless, 启用 PMHQ 模式; loginUin 有值 = 快速登录指定 QQ 号;
-            // protocol 仅无头直连用, 决定 LLBot 的协议端以及读写哪个 session 文件
-            var userArgs = new List<string>();
-            if (PmhqPort.HasValue)
-            {
-                userArgs.Add($"--pmhq-port={PmhqPort.Value}");
-            }
-            if (!string.IsNullOrEmpty(loginUin))
-            {
-                userArgs.Add($"--qq={loginUin}");
-            }
-            if (!string.IsNullOrEmpty(protocol))
-            {
-                userArgs.Add($"--protocol={protocol}");
-            }
-            if (useChinaCdn)
-            {
-                userArgs.Add("--cdn");
-                userArgs.Add("china");
-            }
-            if (DevMode.IsEnabled)
-            {
-                userArgs.Add(DevMode.Argument);
-            }
-            if (userArgs.Count > 0)
-            {
-                startInfo.ArgumentList.Add("--");
-                foreach (var arg in userArgs) startInfo.ArgumentList.Add(arg);
-            }
-
-            var fullCommand = $"{nodePath} {string.Join(" ", startInfo.ArgumentList)}";
-            _logger.LogInformation("启动 LLBot 完整命令: {Command}", fullCommand);
-            _logger.LogInformation("工作目录: {WorkingDir}", workingDir);
-
-            _llbotProcess = StartProcessWithProxy(startInfo, httpProxy);
-
-            if (_llbotProcess == null)
-            {
-                _logger.LogError("无法启动 LLBot 进程");
-                _llbotStatus = ProcessStatus.Error;
-                ProcessStatusChanged?.Invoke(this, _llbotStatus);
-                return false;
-            }
-
-            // 等待一小段时间确认进程启动
-            await Task.Delay(500);
-
-            // 检查进程是否立即退出
-            if (_llbotProcess.HasExited)
-            {
-                _logger.LogError("LLBot 进程立即退出，返回码: {ExitCode}", _llbotProcess.ExitCode);
-                await LogExitedProcessOutputAsync(_llbotProcess, "LLBot");
-                _llbotStatus = ProcessStatus.Error;
-                ProcessStatusChanged?.Invoke(this, _llbotStatus);
-                return false;
-            }
-
-            // 附加日志收集
-            _logCollector.AttachProcess("LLBot", _llbotProcess);
-
-            _llbotStatus = ProcessStatus.Running;
-            ProcessStatusChanged?.Invoke(this, _llbotStatus);
-
-            // 启动监控
-            _monitorCts ??= new CancellationTokenSource();
-            _llbotMonitorTask = MonitorProcessAsync(_llbotProcess, "LLBot", _monitorCts.Token);
-
-            _logger.LogInformation("LLBot 启动成功, PID: {Pid}", _llbotProcess.Id);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "启动 LLBot 失败");
-            _llbotStatus = ProcessStatus.Error;
-            ProcessStatusChanged?.Invoke(this, _llbotStatus);
+            _logger.LogError("Node.js 可执行文件不存在: {Path}", options.NodePath);
             return false;
         }
+
+        if (!File.Exists(options.ScriptPath))
+        {
+            _logger.LogError("LLBot 脚本不存在: {Path}", options.ScriptPath);
+            return false;
+        }
+
+        var workingDir = Path.GetDirectoryName(Path.GetFullPath(options.ScriptPath))!;
+        var scriptFileName = Path.GetFileName(options.ScriptPath);
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = Path.GetFullPath(options.NodePath),
+            WorkingDirectory = workingDir,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            // 每个实例一个隐藏控制台, 停止时往这个控制台发 Ctrl+C
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+
+        startInfo.Environment["NODE_SKIP_PLATFORM_CHECK"] = "1";
+        startInfo.Environment["FORCE_COLOR"] = "3";
+        // Desktop 没了 LLBot 自己退出 (hostLifecycle.ts)
+        startInfo.Environment["LL_PARENT_PID"] = Environment.ProcessId.ToString();
+        if (!string.IsNullOrWhiteSpace(options.HttpProxy))
+        {
+            _logger.LogInformation("已设置 HTTP 代理环境变量: {Proxy}", MaskProxyCredentials(options.HttpProxy));
+            foreach (var name in ProxyEnvNames) startInfo.Environment[name] = options.HttpProxy.Trim();
+        }
+
+        startInfo.ArgumentList.Add("--enable-source-maps");
+        startInfo.ArgumentList.Add("--disable-warning=ExperimentalWarning");
+        startInfo.ArgumentList.Add(scriptFileName);
+
+        // 传给 LLBot 脚本的参数 (都放在 -- 之后). 登录方式 / 协议 / QQ 路径不由 Desktop 指定, 全在 WebUI 里配.
+        startInfo.ArgumentList.Add("--");
+        startInfo.ArgumentList.Add("--instance");
+        startInfo.ArgumentList.Add(instance);
+        startInfo.ArgumentList.Add("--webui-port");
+        startInfo.ArgumentList.Add(options.WebUiPort.ToString());
+        if (options.UseChinaCdn)
+        {
+            startInfo.ArgumentList.Add("--cdn");
+            startInfo.ArgumentList.Add("china");
+        }
+        if (DevMode.IsEnabled)
+        {
+            startInfo.ArgumentList.Add(DevMode.Argument);
+        }
+
+        _logger.LogInformation("启动实例 {Instance}: {Node} {Args}", instance, options.NodePath, string.Join(" ", startInfo.ArgumentList));
+
+        // 子进程继承本进程的 "忽略 Ctrl+C" 标志 (SetConsoleCtrlHandler(NULL, TRUE); 有些终端 / 启动器会给拉起的程序带上).
+        // 带着它的 LLBot 收不到 Ctrl+C, 停实例只能等超时强杀, 所以起进程前先清掉.
+        if (PlatformHelper.IsWindows) SetConsoleCtrlHandler(IntPtr.Zero, false);
+
+        Process? process;
+        try
+        {
+            process = Process.Start(startInfo);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "启动实例 {Instance} 失败", instance);
+            return false;
+        }
+
+        if (process == null)
+        {
+            _logger.LogError("无法启动实例 {Instance} 的进程", instance);
+            return false;
+        }
+
+        var entry = new Entry { Process = process, Status = ProcessStatus.Starting };
+        lock (_entriesLock) _entries[instance] = entry;
+        SetStatus(instance, entry, ProcessStatus.Starting);
+
+        // 等一小段时间确认没有立即退出 (参数错 / 实例被别的进程锁着)
+        await Task.Delay(500);
+        if (process.HasExited)
+        {
+            entry.ExitCode = process.ExitCode;
+            _logger.LogError("实例 {Instance} 立即退出，退出码: {ExitCode}", instance, process.ExitCode);
+            await LogExitedProcessOutputAsync(process, instance);
+            SetStatus(instance, entry, ProcessStatus.Error);
+            process.Dispose();
+            lock (_entriesLock) _entries.Remove(instance);
+            return false;
+        }
+
+        _logCollector.AttachProcess(instance, process);
+        SetStatus(instance, entry, ProcessStatus.Running);
+        _ = MonitorProcessAsync(instance, entry);
+        _logger.LogInformation("实例 {Instance} 已启动, PID: {Pid}", instance, process.Id);
+        return true;
     }
 
-    private async Task LogExitedProcessOutputAsync(Process process, string processName)
+    private async Task LogExitedProcessOutputAsync(Process process, string instance)
     {
         try
         {
@@ -642,108 +296,167 @@ public class ProcessManager : IProcessManager, IDisposable
             var stderr = stderrTask.Result.Trim();
 
             if (!string.IsNullOrEmpty(stdout))
-                _logger.LogError("{ProcessName} stdout: {Output}", processName, stdout);
+                _logger.LogError("[{Instance}] stdout: {Output}", instance, stdout);
             if (!string.IsNullOrEmpty(stderr))
-                _logger.LogError("{ProcessName} stderr: {Error}", processName, stderr);
+                _logger.LogError("[{Instance}] stderr: {Error}", instance, stderr);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "读取 {ProcessName} 退出输出失败", processName);
+            _logger.LogWarning(ex, "读取实例 {Instance} 退出输出失败", instance);
         }
     }
 
-    public async Task StopPmhqAsync()
+    private async Task MonitorProcessAsync(string instance, Entry entry)
     {
-        // PMHQ 端口随其生命周期, 停止即失效. 必须清空, 否则下次无头模式 StartLLBotAsync
-        // 会看到残留的 PmhqPort 而误给 LLBot 传 --pmhq-port,
-        // 让 LLBot 去连根本没启动的 PMHQ, 卡在 initializing (直连登录流程不会执行).
-        // 放在 early-return 之前, 兜住"PMHQ 启动失败但 PmhqPort 已赋值"的残留.
-        PmhqPort = null;
-
-        if (_pmhqStatus == ProcessStatus.Stopped)
-            return;
-
-        _pmhqStatus = ProcessStatus.Stopping;
-        ProcessStatusChanged?.Invoke(this, _pmhqStatus);
-
-        if (_pmhqProcess != null)
+        try
         {
-            _logCollector.DetachProcess("PMHQ");
-
-            var pid = _pmhqProcess.Id;
-            var process = _pmhqProcess;
-            _pmhqProcess = null;
-
-            try
-            {
-                if (!process.HasExited)
-                {
-                    await KillProcessTreeAsync(pid);
-                }
-            }
-            catch { }
-            finally
-            {
-                process.Dispose();
-            }
+            await entry.Process.WaitForExitAsync(entry.MonitorCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "监控实例 {Instance} 进程时出错", instance);
+            return;
         }
 
-        _pmhqStatus = ProcessStatus.Stopped;
-        ProcessStatusChanged?.Invoke(this, _pmhqStatus);
-        _logger.LogInformation("PMHQ 已停止");
+        // 主动停止的路径由 StopInstanceCoreAsync 收尾, 这里只处理自己退出的
+        if (entry.Status == ProcessStatus.Stopping) return;
+        try { entry.ExitCode = entry.Process.ExitCode; } catch { }
+        _logger.LogWarning("实例 {Instance} 进程已退出, ExitCode: {ExitCode}", instance, entry.ExitCode);
+        _logCollector.DetachProcess(instance);
+        lock (_entriesLock)
+        {
+            if (ReferenceEquals(_entries.GetValueOrDefault(instance), entry)) _entries.Remove(instance);
+        }
+        SetStatus(instance, entry, ProcessStatus.Stopped);
+        entry.Process.Dispose();
     }
 
-    public async Task StopLLBotAsync()
+    public async Task StopInstanceAsync(string instance)
     {
-        if (_llbotProcess == null || _llbotStatus == ProcessStatus.Stopped)
-            return;
+        await _lifecycle.WaitAsync();
+        try { await StopInstanceCoreAsync(instance); }
+        finally { _lifecycle.Release(); }
+    }
 
-        _llbotStatus = ProcessStatus.Stopping;
-        ProcessStatusChanged?.Invoke(this, _llbotStatus);
+    private async Task StopInstanceCoreAsync(string instance)
+    {
+        var entry = GetEntry(instance);
+        if (entry == null) return;
 
-        _logCollector.DetachProcess("LLBot");
+        entry.MonitorCts.Cancel();
+        SetStatus(instance, entry, ProcessStatus.Stopping);
 
-        var pid = _llbotProcess.Id;
-        var process = _llbotProcess;
-        _llbotProcess = null;
-
+        var process = entry.Process;
         try
         {
             if (!process.HasExited)
             {
-                await KillProcessTreeAsync(pid);
+                var pid = process.Id;
+                if (RequestGracefulStop(pid))
+                {
+                    try
+                    {
+                        // LLBot 收到 SIGINT 后要收拾原生会话 (含它拉起的 QQ), 给足时间
+                        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+                        await process.WaitForExitAsync(timeout.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        _logger.LogWarning("实例 {Instance} 没有在 35 秒内退出，强制清理其进程树", instance);
+                    }
+                }
+                if (!process.HasExited) await KillProcessTreeAsync(pid);
             }
+            try { entry.ExitCode = process.HasExited ? process.ExitCode : null; } catch { }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "停止实例 {Instance} 时出错", instance);
+        }
         finally
         {
+            // 退出后再分离, 关停期间 LLBot 打的日志也要收
+            _logCollector.DetachProcess(instance);
+            lock (_entriesLock)
+            {
+                if (ReferenceEquals(_entries.GetValueOrDefault(instance), entry)) _entries.Remove(instance);
+            }
+            SetStatus(instance, entry, ProcessStatus.Stopped);
             process.Dispose();
+            _logger.LogInformation("实例 {Instance} 已停止", instance);
         }
-
-        _llbotStatus = ProcessStatus.Stopped;
-        ProcessStatusChanged?.Invoke(this, _llbotStatus);
-        _logger.LogInformation("LLBot 已停止");
     }
 
-    public async Task StopAllAsync(int? qqPid = null)
+    public async Task StopAllAsync()
     {
-        _monitorCts?.Cancel();
+        var instances = RunningInstances;
+        if (instances.Count == 0) return;
+        _logger.LogInformation("停止所有实例: {Instances}", string.Join(", ", instances));
+        // 各实例互不相干, 并行停
+        await Task.WhenAll(instances.Select(StopInstanceAsync));
+        _logger.LogInformation("所有实例已停止");
+    }
 
-        _logger.LogInformation("停止所有进程...");
-
-        // 先停止 LLBot 和 PMHQ（已包含等待逻辑）
-        await StopLLBotAsync();
-        await StopPmhqAsync();
-
-        // 最后终止 QQ 进程
-        if (qqPid.HasValue && qqPid.Value > 0)
+    // Windows: 附到子进程的隐藏控制台上发 Ctrl+C (Node 把它当 SIGINT). 自己先忽略 Ctrl+C, 否则这一下也会打到 Desktop.
+    // Unix: SIGTERM. 返回 false 表示没发出去, 调用方直接杀进程树.
+    private bool RequestGracefulStop(int pid)
+    {
+        if (!PlatformHelper.IsWindows)
         {
-            _logger.LogInformation("正在终止 QQ 进程, PID: {Pid}", qqPid.Value);
-            await KillProcessTreeAsync(qqPid.Value);
-            _logger.LogInformation("QQ 进程已终止");
+            try
+            {
+                using var kill = Process.Start(new ProcessStartInfo("kill", $"-TERM {pid}") { UseShellExecute = false, CreateNoWindow = true });
+                kill?.WaitForExit(5000);
+                return kill is { ExitCode: 0 };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "向进程 {Pid} 发送 SIGTERM 失败", pid);
+                return false;
+            }
         }
 
-        _logger.LogInformation("所有进程已停止");
+        return SendConsoleCtrlC(pid);
+    }
+
+    private bool SendConsoleCtrlC(int pid)
+    {
+        // Desktop 自己带着控制台时 (dotnet run) 先脱离, 事后再接回父进程的控制台
+        var hadOwnConsole = false;
+        if (!AttachConsole((uint)pid))
+        {
+            if (Marshal.GetLastWin32Error() != ERROR_ACCESS_DENIED) return LogCtrlFailure(pid, "AttachConsole");
+            hadOwnConsole = true;
+            FreeConsole();
+            if (!AttachConsole((uint)pid)) return LogCtrlFailure(pid, "AttachConsole");
+        }
+
+        var sent = false;
+        try
+        {
+            SetConsoleCtrlHandler(IntPtr.Zero, true);
+            sent = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
+            if (!sent) LogCtrlFailure(pid, "GenerateConsoleCtrlEvent");
+            // 事件是异步投递的, 等它在本进程里被 (忽略地) 处理完再解除忽略
+            Thread.Sleep(200);
+        }
+        finally
+        {
+            FreeConsole();
+            SetConsoleCtrlHandler(IntPtr.Zero, false);
+            if (hadOwnConsole) AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+        return sent;
+    }
+
+    private bool LogCtrlFailure(int pid, string step)
+    {
+        _logger.LogWarning("向进程 {Pid} 发送 Ctrl+C 失败 ({Step}, error={Error})，改为强制结束", pid, step, Marshal.GetLastWin32Error());
+        return false;
     }
 
     /// <summary>
@@ -761,7 +474,6 @@ public class ProcessManager : IProcessManager, IDisposable
             }
             catch (ArgumentException)
             {
-                // 进程已退出
                 return;
             }
         }
@@ -774,52 +486,21 @@ public class ProcessManager : IProcessManager, IDisposable
     {
         try
         {
-            if (PlatformHelper.IsWindows)
-            {
-                // 使用 taskkill 强制终止进程树
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "taskkill",
-                    Arguments = $"/F /T /PID {pid}",
-                    CreateNoWindow = true,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
+            var psi = PlatformHelper.IsWindows
+                ? new ProcessStartInfo("taskkill", $"/F /T /PID {pid}")
+                : new ProcessStartInfo("kill", $"-KILL {pid}");
+            psi.CreateNoWindow = true;
+            psi.UseShellExecute = false;
+            psi.RedirectStandardOutput = true;
+            psi.RedirectStandardError = true;
 
-                using var killProcess = Process.Start(psi);
-                if (killProcess != null)
-                {
-                    // 等待 taskkill 命令完成
-                    await killProcess.WaitForExitAsync();
-                }
-            }
-            else
-            {
-                // 在 macOS/Linux 上使用 kill -TERM
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "kill",
-                    Arguments = $"-TERM {pid}",
-                    CreateNoWindow = true,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
+            using var killProcess = Process.Start(psi);
+            if (killProcess != null) await killProcess.WaitForExitAsync();
 
-                using var killProcess = Process.Start(psi);
-                if (killProcess != null)
-                {
-                    await killProcess.WaitForExitAsync();
-                }
-            }
-
-            // 等待目标进程完全退出
             await WaitForProcessExitAsync(pid, timeoutMs);
         }
         catch
         {
-            // 如果命令失败，尝试使用 Process.Kill
             try
             {
                 using var process = Process.GetProcessById(pid);
@@ -834,320 +515,127 @@ public class ProcessManager : IProcessManager, IDisposable
     }
 
     /// <summary>
-    /// 快速强制终止所有进程（用于应用退出）
+    /// 快速强制终止所有实例（用于应用退出兜底）
     /// </summary>
-    public void ForceKillAll(int? qqPid = null)
+    public void ForceKillAll()
     {
-        _logger.LogInformation("强制终止所有进程...");
-
-        // 终止 LLBot
-        if (_llbotProcess != null && !_llbotProcess.HasExited)
+        List<KeyValuePair<string, Entry>> entries;
+        lock (_entriesLock) entries = _entries.ToList();
+        foreach (var (instance, entry) in entries)
         {
-            var llbotPid = _llbotProcess.Id;
-            _logger.LogInformation("强制终止 LLBot 进程, PID: {Pid}", llbotPid);
-            KillProcessTree(llbotPid);
+            try
+            {
+                if (entry.Process.HasExited) continue;
+                var pid = entry.Process.Id;
+                _logger.LogInformation("强制终止实例 {Instance}, PID: {Pid}", instance, pid);
+                KillProcessTree(pid);
+            }
+            catch { }
         }
-
-        // 终止 PMHQ
-        if (_pmhqProcess != null && !_pmhqProcess.HasExited)
-        {
-            var pmhqPid = _pmhqProcess.Id;
-            _logger.LogInformation("强制终止 PMHQ 进程, PID: {Pid}", pmhqPid);
-            KillProcessTree(pmhqPid);
-        }
-
-        // 终止 QQ
-        if (qqPid.HasValue && qqPid.Value > 0)
-        {
-            _logger.LogInformation("强制终止 QQ 进程, PID: {Pid}", qqPid.Value);
-            KillProcessTree(qqPid.Value);
-        }
-
-        _logger.LogInformation("所有进程已强制终止");
     }
 
-    /// <summary>
-    /// 同步杀死进程树（用于 ForceKillAll）
-    /// </summary>
     private static void KillProcessTree(int pid)
     {
         try
         {
-            if (PlatformHelper.IsWindows)
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "taskkill",
-                    Arguments = $"/F /T /PID {pid}",
-                    CreateNoWindow = true,
-                    UseShellExecute = false
-                };
-                using var killProcess = Process.Start(psi);
-                killProcess?.WaitForExit(5000);
-            }
-            else
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "kill",
-                    Arguments = $"-TERM {pid}",
-                    CreateNoWindow = true,
-                    UseShellExecute = false
-                };
-                using var killProcess = Process.Start(psi);
-                killProcess?.WaitForExit(5000);
-            }
+            var psi = PlatformHelper.IsWindows
+                ? new ProcessStartInfo("taskkill", $"/F /T /PID {pid}")
+                : new ProcessStartInfo("kill", $"-KILL {pid}");
+            psi.CreateNoWindow = true;
+            psi.UseShellExecute = false;
+            using var killProcess = Process.Start(psi);
+            killProcess?.WaitForExit(5000);
         }
         catch
         {
             try
             {
                 using var process = Process.GetProcessById(pid);
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
+                if (!process.HasExited) process.Kill(entireProcessTree: true);
             }
             catch { }
         }
     }
 
-    public ProcessStatus GetProcessStatus(string processName)
+    /// <summary>
+    /// 启动一个脱离 Job Object 的进程，使其不会随主进程退出而被终止（仅 Windows）
+    /// </summary>
+    public bool StartProcessOutsideJob(string fileName, string? workingDirectory = null)
     {
-        return processName.ToLower() switch
-        {
-            "pmhq" => _pmhqStatus,
-            "llbot" => _llbotStatus,
-            _ => ProcessStatus.Stopped
-        };
-    }
-
-    public ProcessResourceInfo GetProcessResources(string processName, bool includeCpu = true)
-    {
-        var process = processName.ToLower() switch
-        {
-            "pmhq" => _pmhqProcess,
-            "llbot" => _llbotProcess,
-            _ => null
-        };
-
-        if (process == null || process.HasExited)
-        {
-            return new ProcessResourceInfo(processName, 0, 0);
-        }
-
-        try
-        {
-            var cpuPercent = includeCpu ? GetCpuUsage(process) : 0;
-            var memoryMB = GetMemoryMB(process);
-            return new ProcessResourceInfo(processName, cpuPercent, memoryMB);
-        }
-        catch
-        {
-            return new ProcessResourceInfo(processName, 0, 0);
-        }
-    }
-
-    private static double GetMemoryMB(Process process)
-    {
-        try
-        {
-            // 获取进程及其所有子进程的内存总和
-            var totalMemory = GetProcessTreeMemory(process.Id);
-            if (totalMemory > 0)
-                return totalMemory;
-        }
-        catch { }
-
-        // fallback: 只获取当前进程
-        try
-        {
-            var pid = process.Id;
-            if (!_instanceNameCache.TryGetValue(pid, out var instanceName))
-            {
-                instanceName = FindInstanceName(process);
-                if (instanceName != null)
-                {
-                    _instanceNameCache[pid] = instanceName;
-                }
-            }
-
-            if (!string.IsNullOrEmpty(instanceName) && PlatformHelper.IsWindows)
-            {
-                using var counter = new PerformanceCounter("Process", "Working Set - Private", instanceName, true);
-                return counter.RawValue / 1024.0 / 1024.0;
-            }
-        }
-        catch { }
-
-        try
-        {
-            process.Refresh();
-            return process.WorkingSet64 / 1024.0 / 1024.0;
-        }
-        catch { return 0; }
-    }
-
-    private static double GetProcessTreeMemory(int parentPid)
-    {
-        // 旧实现：枚举所有进程 + NtQueryInformationProcess 获取父 PID，
-        // 会在普通用户权限下频繁触发 Win32Exception（拒绝访问/进程已退出），调试时非常“刷屏”。
-        // 新实现：Windows 上使用 WMI 获取 (pid, ppid) 并做短缓存，避免句柄访问。
-
         if (!PlatformHelper.IsWindows)
         {
-            try
-            {
-                using var proc = Process.GetProcessById(parentPid);
-                return GetSingleProcessMemory(proc);
-            }
-            catch
-            {
-                return 0;
-            }
+            _logger.LogWarning("StartProcessOutsideJob 仅支持 Windows 平台");
+            return false;
         }
 
-        var childrenMap = TryGetChildrenMapCached();
-        if (childrenMap == null)
+        var si = new STARTUPINFO { cb = Marshal.SizeOf<STARTUPINFO>() };
+        var cmdLine = $"cmd.exe /c \"{fileName}\"";
+
+        var created = CreateProcess(
+            null,
+            cmdLine,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            false,
+            CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_CONSOLE,
+            IntPtr.Zero,
+            workingDirectory,
+            ref si,
+            out var pi);
+
+        if (!created)
         {
-            // 失败时直接返回 0，让上层走 WorkingSet/PerformanceCounter 的 fallback
-            return 0;
+            _logger.LogError("CreateProcess 失败, error={Error}", Marshal.GetLastWin32Error());
+            return false;
         }
 
-        double totalMemory = 0;
-        var queue = new Queue<int>();
-        var visited = new HashSet<int>();
-        queue.Enqueue(parentPid);
-
-        while (queue.Count > 0)
-        {
-            var pid = queue.Dequeue();
-            if (!visited.Add(pid))
-                continue;
-
-            try
-            {
-                using var proc = Process.GetProcessById(pid);
-                totalMemory += GetSingleProcessMemory(proc);
-            }
-            catch
-            {
-                // ignore
-            }
-
-            if (childrenMap.TryGetValue(pid, out var children))
-            {
-                foreach (var childPid in children)
-                {
-                    if (!visited.Contains(childPid))
-                        queue.Enqueue(childPid);
-                }
-            }
-        }
-
-        return totalMemory;
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        _logger.LogInformation("已启动脱离 Job 的进程: PID={Pid}, cmd={Cmd}", pi.dwProcessId, cmdLine);
+        return true;
     }
 
-    private static Dictionary<int, List<int>>? TryGetChildrenMapCached()
+    public void Dispose()
     {
-        // WMI 仅在 Windows 可用
-        if (!PlatformHelper.IsWindows)
-            return null;
-
-        lock (_processTreeCacheLock)
+        List<Entry> entries;
+        lock (_entriesLock) entries = _entries.Values.ToList();
+        foreach (var entry in entries)
         {
-            var nowUtc = DateTime.UtcNow;
-            if (_childrenMapCache != null && (nowUtc - _childrenMapCacheTimeUtc).TotalSeconds < 2)
-            {
-                return _childrenMapCache;
-            }
-
-            try
-            {
-                _childrenMapCache = BuildProcessChildrenMapWin32();
-                _childrenMapCacheTimeUtc = nowUtc;
-                return _childrenMapCache;
-            }
-            catch
-            {
-                _childrenMapCache = null;
-                _childrenMapCacheTimeUtc = nowUtc;
-                return null;
-            }
+            entry.MonitorCts.Cancel();
+            entry.MonitorCts.Dispose();
+            entry.Process.Dispose();
         }
-    }
 
-    private static Dictionary<int, List<int>> BuildProcessChildrenMapWin32()
-    {
-        const uint TH32CS_SNAPPROCESS = 0x00000002;
-        var map = new Dictionary<int, List<int>>();
-        var snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (snapshot == IntPtr.Zero || snapshot == new IntPtr(-1))
-            return map;
-
-        try
+        if (_jobHandle != IntPtr.Zero)
         {
-            var entry = new PROCESSENTRY32
-            {
-                dwSize = (uint)Marshal.SizeOf<PROCESSENTRY32>()
-            };
-
-            if (!Process32First(snapshot, ref entry))
-                return map;
-
-            do
-            {
-                var pid = unchecked((int)entry.th32ProcessID);
-                var ppid = unchecked((int)entry.th32ParentProcessID);
-                if (!map.TryGetValue(ppid, out var list))
-                {
-                    list = new List<int>();
-                    map[ppid] = list;
-                }
-                list.Add(pid);
-            }
-            while (Process32Next(snapshot, ref entry));
-
-            return map;
+            CloseHandle(_jobHandle);
+            _jobHandle = IntPtr.Zero;
         }
-        finally
-        {
-            CloseHandle(snapshot);
-        }
-    }
 
-    private static double GetSingleProcessMemory(Process process)
-    {
-        try
-        {
-            var pid = process.Id;
-            if (!_instanceNameCache.TryGetValue(pid, out var instanceName))
-            {
-                instanceName = FindInstanceName(process);
-                if (instanceName != null)
-                    _instanceNameCache[pid] = instanceName;
-            }
-
-            if (!string.IsNullOrEmpty(instanceName) && PlatformHelper.IsWindows)
-            {
-                using var counter = new PerformanceCounter("Process", "Working Set - Private", instanceName, true);
-                return counter.RawValue / 1024.0 / 1024.0;
-            }
-        }
-        catch { }
-
-        try
-        {
-            process.Refresh();
-            return process.WorkingSet64 / 1024.0 / 1024.0;
-        }
-        catch { return 0; }
+        GC.SuppressFinalize(this);
     }
 
     #region Windows API
 
-    [DllImport("ntdll.dll")]
-    private static extern int NtQueryInformationProcess(IntPtr processHandle, int processInformationClass, ref PROCESS_BASIC_INFORMATION processInformation, int processInformationLength, out int returnLength);
+    private const int ERROR_ACCESS_DENIED = 5;
+    private const uint CTRL_C_EVENT = 0;
+    private const uint ATTACH_PARENT_PROCESS = 0xFFFFFFFF;
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool AttachConsole(uint dwProcessId);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool FreeConsole();
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetConsoleCtrlHandler(nint handlerRoutine, [MarshalAs(UnmanagedType.Bool)] bool add);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GenerateConsoleCtrlEvent(uint dwCtrlEvent, uint dwProcessGroupId);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string? lpName);
@@ -1160,15 +648,6 @@ public class ProcessManager : IProcessManager, IDisposable
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern bool Process32First(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern bool Process32Next(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool CreateProcess(
@@ -1213,33 +692,6 @@ public class ProcessManager : IProcessManager, IDisposable
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct PROCESS_BASIC_INFORMATION
-    {
-        public IntPtr Reserved1;
-        public IntPtr PebBaseAddress;
-        public IntPtr Reserved2_0;
-        public IntPtr Reserved2_1;
-        public IntPtr UniqueProcessId;
-        public IntPtr InheritedFromUniqueProcessId;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct PROCESSENTRY32
-    {
-        public uint dwSize;
-        public uint cntUsage;
-        public uint th32ProcessID;
-        public IntPtr th32DefaultHeapID;
-        public uint th32ModuleID;
-        public uint cntThreads;
-        public uint th32ParentProcessID;
-        public int pcPriClassBase;
-        public uint dwFlags;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-        public string szExeFile;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
     {
         public long PerProcessUserTimeLimit;
@@ -1280,178 +732,4 @@ public class ProcessManager : IProcessManager, IDisposable
     private const uint JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x0800;
 
     #endregion
-
-    private static int GetParentProcessId(int pid)
-    {
-        // NtQueryInformationProcess is Windows-only
-        if (!PlatformHelper.IsWindows)
-            return 0;
-
-        try
-        {
-            var process = Process.GetProcessById(pid);
-            var pbi = new PROCESS_BASIC_INFORMATION();
-            int returnLength;
-            var status = NtQueryInformationProcess(process.Handle, 0, ref pbi, Marshal.SizeOf(pbi), out returnLength);
-            if (status == 0)
-                return pbi.InheritedFromUniqueProcessId.ToInt32();
-        }
-        catch { }
-        return 0;
-    }
-
-    private static string? FindInstanceName(Process process)
-    {
-        // PerformanceCounter is Windows-only
-        if (!PlatformHelper.IsWindows)
-            return null;
-
-        try
-        {
-            var name = process.ProcessName;
-            var pid = process.Id;
-
-            try
-            {
-                using var counter = new PerformanceCounter("Process", "ID Process", name, true);
-                if ((int)counter.RawValue == pid)
-                    return name;
-            }
-            catch { }
-
-            for (int i = 1; i <= 20; i++)
-            {
-                var instanceName = $"{name}#{i}";
-                try
-                {
-                    using var counter = new PerformanceCounter("Process", "ID Process", instanceName, true);
-                    if ((int)counter.RawValue == pid)
-                        return instanceName;
-                }
-                catch { break; }
-            }
-        }
-        catch { }
-        return null;
-    }
-
-    private static double GetCpuUsage(Process process)
-    {
-        try
-        {
-            process.Refresh();
-            var now = DateTime.UtcNow;
-            var currentCpuTime = process.TotalProcessorTime;
-            var pid = process.Id;
-
-            if (_cpuSampleCache.TryGetValue(pid, out var lastSample))
-            {
-                var elapsedMs = (now - lastSample.Time).TotalMilliseconds;
-                // 至少间隔 50ms 才计算，避免除数过小
-                if (elapsedMs >= 50)
-                {
-                    var cpuUsedMs = (currentCpuTime - lastSample.CpuTime).TotalMilliseconds;
-                    _cpuSampleCache[pid] = (now, currentCpuTime);
-                    return cpuUsedMs / (Environment.ProcessorCount * elapsedMs) * 100;
-                }
-                // 间隔太短，返回上次计算的值（通过不更新缓存实现）
-                return 0;
-            }
-
-            // 首次采样，记录并返回 0
-            _cpuSampleCache[pid] = (now, currentCpuTime);
-            return 0;
-        }
-        catch
-        {
-            return 0;
-        }
-    }
-
-    private async Task MonitorProcessAsync(Process process, string name, CancellationToken ct)
-    {
-        try
-        {
-            await process.WaitForExitAsync(ct);
-
-            _logger.LogWarning("{Name} 进程已退出, ExitCode: {ExitCode}", name, process.ExitCode);
-
-            if (name == "PMHQ")
-            {
-                _logCollector.DetachProcess("PMHQ");
-                _pmhqStatus = ProcessStatus.Stopped;
-                ProcessStatusChanged?.Invoke(this, _pmhqStatus);
-            }
-            else if (name == "LLBot")
-            {
-                _logCollector.DetachProcess("LLBot");
-                _llbotStatus = ProcessStatus.Stopped;
-                ProcessStatusChanged?.Invoke(this, _llbotStatus);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // 正常取消
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "监控 {Name} 进程时出错", name);
-        }
-    }
-
-    /// <summary>
-    /// 启动一个脱离 Job Object 的进程，使其不会随主进程退出而被终止（仅 Windows）
-    /// </summary>
-    public bool StartProcessOutsideJob(string fileName, string? workingDirectory = null)
-    {
-        if (!PlatformHelper.IsWindows)
-        {
-            _logger.LogWarning("StartProcessOutsideJob 仅支持 Windows 平台");
-            return false;
-        }
-
-        var si = new STARTUPINFO { cb = Marshal.SizeOf<STARTUPINFO>() };
-        var cmdLine = $"cmd.exe /c \"{fileName}\"";
-
-        var created = CreateProcess(
-            null,
-            cmdLine,
-            IntPtr.Zero,
-            IntPtr.Zero,
-            false,
-            CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_CONSOLE,
-            IntPtr.Zero,
-            workingDirectory,
-            ref si,
-            out var pi);
-
-        if (!created)
-        {
-            _logger.LogError("CreateProcess 失败, error={Error}", Marshal.GetLastWin32Error());
-            return false;
-        }
-
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        _logger.LogInformation("已启动脱离 Job 的进程: PID={Pid}, cmd={Cmd}", pi.dwProcessId, cmdLine);
-        return true;
-    }
-
-    public void Dispose()
-    {
-        _monitorCts?.Cancel();
-        _monitorCts?.Dispose();
-
-        _pmhqProcess?.Dispose();
-        _llbotProcess?.Dispose();
-
-        // 清理 Job Object
-        if (_jobHandle != IntPtr.Zero)
-        {
-            CloseHandle(_jobHandle);
-            _jobHandle = IntPtr.Zero;
-        }
-
-        GC.SuppressFinalize(this);
-    }
 }

@@ -5,54 +5,20 @@ using LuckyLilliaDesktop.Utils;
 namespace LuckyLilliaDesktop.Models;
 
 /// <summary>
-/// 应用配置 - 与 Python 版本的 config_manager.py 保持一致
+/// app_settings.json. 只放 Desktop 自己的设置; LLBot 的配置 (登录方式 / QQ 路径 / 协议 / WebUI 端口...) 全在 LLBot WebUI 里改.
+/// 字段归属与写回约定见 doc/config-persistence.md.
 /// </summary>
 public class AppConfig
 {
-    // 路径配置
-    [JsonPropertyName("qq_path")]
-    public string QQPath { get; set; } = string.Empty;
-
-    [JsonPropertyName("pmhq_path")]
-    public string PmhqPath { get; set; } = Constants.DefaultPaths.PmhqExe;
-
     [JsonPropertyName("llbot_path")]
     public string LLBotPath { get; set; } = "bin/llbot/llbot.js";
 
     [JsonPropertyName("node_path")]
     public string NodePath { get; set; } = Constants.DefaultPaths.NodeExe;
 
-    // 启动选项
-    [JsonPropertyName("auto_login_qq")]
-    public string AutoLoginQQ { get; set; } = string.Empty;
-
-    [JsonPropertyName("auto_start_bot")]
-    public bool AutoStartBot { get; set; } = false;
-
-    // macOS 仅支持无头模式: PMHQ 注入 QQ、Windows Job Object、命名管道 IPC、扫码登录对话框
-    // 都是 Windows 专有机制, 非无头路径在 macOS 无法工作, 故 macOS 上恒为无头, 不受配置值影响.
-    // Windows/Linux 默认有头 (PMHQ 注入 QQ 的模式); macOS 的 getter 恒 true 覆盖此默认值.
-    private bool _headless = false;
-
-    [JsonPropertyName("headless")]
-    public bool Headless
-    {
-        get => PlatformHelper.IsMacOS || _headless;
-        set => _headless = value;
-    }
-
-    // 无头模式传给 LLBot 的 --protocol. setter 归一化, 读到的恒为 LLBotProtocol.Supported 之一.
-    private string _protocol = LLBotProtocol.Default;
-
-    [JsonPropertyName("protocol")]
-    public string Protocol
-    {
-        get => _protocol;
-        set => _protocol = LLBotProtocol.Normalize(value);
-    }
-
-    [JsonPropertyName("debug")]
-    public bool Debug { get; set; } = false;
+    // 程序启动时自动拉起的 LLBot 实例名. 实例目录在 <LLBot>/data/instances/, 见 doc/llbot-webui.md
+    [JsonPropertyName("auto_start_instances")]
+    public List<string> AutoStartInstances { get; set; } = [LLBotWebUi.DefaultInstance];
 
     // 开发模式, 没有命令行开关, 见 DevMode
     [JsonPropertyName("dev")]
@@ -67,26 +33,15 @@ public class AppConfig
     [JsonPropertyName("startup_command")]
     public string StartupCommand { get; set; } = string.Empty;
 
-    // 框架自动启动
-    [JsonPropertyName("auto_start_frameworks")]
-    public List<string> AutoStartFrameworks { get; set; } = new();
-
-    // HTTP 代理: 非空时以 HTTP_PROXY/HTTPS_PROXY 环境变量传给 PMHQ 和 LLBot
+    // HTTP 代理: 非空时以 HTTP_PROXY/HTTPS_PROXY 环境变量传给 LLBot
     [JsonPropertyName("http_proxy")]
     public string HttpProxy { get; set; } = string.Empty;
 
-    // 服务器线路: "overseas"=国外(默认), "china"=国内. 选国内时给 PMHQ / LLBot 传 --cdn china.
+    // 服务器线路: "overseas"=国外(默认), "china"=国内. 选国内时给 LLBot 传 --cdn china.
     [JsonPropertyName("server_region")]
     public string ServerRegion { get; set; } = "overseas";
 
-    // 日志设置
-    [JsonPropertyName("log_save_enabled")]
-    public bool LogSaveEnabled { get; set; } = true;
-
-    [JsonPropertyName("log_retention_seconds")]
-    public int LogRetentionSeconds { get; set; } = 604800; // 默认 7 天
-
-    // 关闭行为
+    // 关闭行为, 三态语义见 doc/config-persistence.md
     [JsonPropertyName("close_to_tray")]
     public bool? CloseToTray { get; set; } = null;
 
@@ -106,12 +61,5 @@ public class AppConfig
     [JsonPropertyName("window_top")]
     public int? WindowTop { get; set; } = null;
 
-    // 兼容性属性 - 只读取不写入
-    [JsonPropertyName("auto_login")]
-    public bool AutoLogin { get; set; } = true;
-
-    /// <summary>
-    /// 默认配置
-    /// </summary>
     public static AppConfig Default => new();
 }

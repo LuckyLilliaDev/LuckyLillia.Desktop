@@ -21,7 +21,8 @@ public interface ILogCollector
     IEnumerable<LogEntry> GetRecentLogs(int count);
     void AttachProcess(string processName, Process process);
     void DetachProcess(string processName);
-    void ClearLogs();
+    /// <summary>processName 为 null 时清全部, 否则只清那个实例的.</summary>
+    void ClearLogs(string? processName = null);
     int GetLogCount();
 }
 
@@ -135,10 +136,20 @@ public class LogCollector : ILogCollector, IDisposable
         return _logQueue.Count;
     }
 
-    public void ClearLogs()
+    public void ClearLogs(string? processName = null)
     {
-        _logQueue.Clear();
-        _logger.LogInformation("日志已清空");
+        if (processName == null)
+        {
+            _logQueue.Clear();
+        }
+        else
+        {
+            // ConcurrentQueue 不能原地过滤; 重建期间并发进来的几条可能丢, 对日志视图无所谓
+            var keep = _logQueue.Where(e => e.ProcessName != processName).ToList();
+            _logQueue.Clear();
+            foreach (var entry in keep) _logQueue.Enqueue(entry);
+        }
+        _logger.LogInformation("日志已清空: {Scope}", processName ?? "全部");
     }
 
     public void Dispose()

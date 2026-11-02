@@ -1,19 +1,17 @@
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Animation;
-using Avalonia.Animation.Easings;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Platform;
-using Avalonia.Threading;
+using Avalonia.VisualTree;
 using LuckyLilliaDesktop.Services;
 using LuckyLilliaDesktop.Utils;
+using LuckyLilliaDesktop.Utils.WebView2;
 using LuckyLilliaDesktop.ViewModels;
 using Microsoft.Extensions.Logging;
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -25,11 +23,8 @@ public partial class MainWindow : Window
     private ILogger<MainWindow>? _logger;
     private bool _windowPositionLoaded;
     private bool _minimizeToTrayOnStartChecked;
-    private IResourceMonitor? _resourceMonitor;
     private Win32Properties.CustomWndProcHookCallback? _snapLayoutHook;
     private MainWindowViewModel? _viewModel;
-    private CancellationTokenSource? _pageAnimationCts;
-    private int _animatedPageIndex = -1;
     private bool _isBackgroundMode;
 
     public MainWindow()
@@ -45,7 +40,7 @@ public partial class MainWindow : Window
         Closing += OnWindowClosing;
         PositionChanged += OnPositionChanged;
         SizeChanged += OnSizeChanged;
-        
+
         // 监听窗口可见性和窗口状态变化以优化性能/更新最大化按钮图标
         PropertyChanged += OnWindowPropertyChanged;
         UpdateMaximizeRestoreIcon();
@@ -56,6 +51,8 @@ public partial class MainWindow : Window
     private void TitleBar_PointerPressed(object? sender, PointerPressedEventArgs e)
     {
         if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
+        // 标题栏里的页面导航自己处理点击, 不当成拖动
+        if (e.Source is Visual source && source.FindAncestorOfType<ListBox>(true) != null) return;
 
         if (e.ClickCount == 2)
         {
@@ -64,17 +61,6 @@ public partial class MainWindow : Window
         }
 
         BeginMoveDrag(e);
-    }
-
-    // SystemDecorations=None 没有系统 resize 边框, 用窗口边缘的透明区 + BeginResizeDrag 自定义 resize
-    private void ResizeBorder_PointerPressed(object? sender, PointerPressedEventArgs e)
-    {
-        if (WindowState == WindowState.Maximized) return;
-        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
-        if (sender is Control c && c.Tag is string tag && Enum.TryParse<WindowEdge>(tag, out var edge))
-        {
-            BeginResizeDrag(edge, e);
-        }
     }
 
     private void MinimizeButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -106,7 +92,7 @@ public partial class MainWindow : Window
         MaximizeIconPath.IsVisible = !isMaximized;
         RestoreIconPath.IsVisible = isMaximized;
     }
-    
+
     private void OnWindowPropertyChanged(object? sender, Avalonia.AvaloniaPropertyChangedEventArgs e)
     {
         if (e.Property.Name == nameof(IsVisible))
@@ -247,7 +233,7 @@ public partial class MainWindow : Window
         BeginResizeDrag(windowEdge, e);
         e.Handled = true;
     }
-    
+
     private void HandleVisibilityChanged(bool isVisible)
     {
         SetBackgroundMode(!isVisible || WindowState == WindowState.Minimized);
@@ -258,21 +244,16 @@ public partial class MainWindow : Window
         if (_isBackgroundMode == enabled) return;
         _isBackgroundMode = enabled;
 
+        // 窗口藏起来时日志列表不用再跟着刷, WebView 也停渲染并挂起 (见 doc/webview2.md "后台挂起")
         if (DataContext is MainWindowViewModel vm)
         {
-            if (enabled)
-            {
-                vm.PauseMonitoring();
-            }
-            else
-            {
-                vm.ResumeMonitoring();
-            }
+            if (enabled) vm.HomeVM.TerminalLog.PauseUIUpdates();
+            else vm.HomeVM.TerminalLog.ResumeUIUpdates();
         }
+        HomePageView.SetWebViewBackgroundMode(enabled);
 
         if (enabled)
         {
-            _pageAnimationCts?.Cancel();
             _ = TrimBackgroundMemoryAsync();
         }
     }
@@ -301,24 +282,12 @@ public partial class MainWindow : Window
     protected override async void OnOpened(EventArgs e)
     {
         base.OnOpened(e);
-        LoadScaledDefaultAvatars();
         await LoadWindowPositionAsync();
         await CheckMinimizeToTrayOnStartAsync();
     }
 
-    private void LoadScaledDefaultAvatars()
-    {
-        const string iconUri = "avares://LuckyLilliaDesktop/Assets/Icons/icon.png";
-        TitleDefaultAvatarIcon.Source = PicHelper.DecodeAssetIconCropped(iconUri, 34, RenderScaling);
-        DefaultAvatarIcon.Source = PicHelper.DecodeAssetIconCropped(iconUri, 56, RenderScaling);
-    }
-
     protected override void OnClosed(EventArgs e)
     {
-        _pageAnimationCts?.Cancel();
-        _pageAnimationCts?.Dispose();
-        _pageAnimationCts = null;
-
         if (_viewModel is not null)
         {
             _viewModel.PropertyChanged -= ViewModel_PropertyChanged;
@@ -372,15 +341,15 @@ public partial class MainWindow : Window
             {
                 // 恢复窗口大小（只恢复普通窗口尺寸，并限制在当前屏幕工作区内，避免上次最大化后像全屏一样打开）
                 RestoreNormalWindowSize(config.WindowWidth, config.WindowHeight);
-                
+
                 // 只有位置有效时才恢复（避免负值过大的情况）
                 if (config.WindowLeft.HasValue && config.WindowTop.HasValue
                     && config.WindowLeft.Value > -1000 && config.WindowTop.Value > -1000)
                 {
                     Position = new PixelPoint((int)config.WindowLeft.Value, (int)config.WindowTop.Value);
                 }
-                
-                _logger?.LogInformation("恢复窗口位置: ({X}, {Y}), 大小: {Width}x{Height}", 
+
+                _logger?.LogInformation("恢复窗口位置: ({X}, {Y}), 大小: {Width}x{Height}",
                     Position.X, Position.Y, Width, Height);
             }
         }
@@ -452,7 +421,7 @@ public partial class MainWindow : Window
     {
         if (_configManager == null || !_windowPositionLoaded)
         {
-            _logger?.LogDebug("跳过保存窗口位置: ConfigManager={ConfigManager}, Loaded={Loaded}", 
+            _logger?.LogDebug("跳过保存窗口位置: ConfigManager={ConfigManager}, Loaded={Loaded}",
                 _configManager != null, _windowPositionLoaded);
             return;
         }
@@ -494,8 +463,8 @@ public partial class MainWindow : Window
                 await _configManager.SetSettingAsync("window_top", (int)top);
                 await _configManager.SetSettingAsync("window_width", (int)width);
                 await _configManager.SetSettingAsync("window_height", (int)height);
-                
-                _logger?.LogInformation("窗口位置已保存: ({X}, {Y}), 大小: {Width}x{Height}", 
+
+                _logger?.LogInformation("窗口位置已保存: ({X}, {Y}), 大小: {Width}x{Height}",
                     left, top, width, height);
             }
             catch (OperationCanceledException)
@@ -524,8 +493,8 @@ public partial class MainWindow : Window
             await _configManager.SetSettingAsync("window_top", (int)Position.Y);
             await _configManager.SetSettingAsync("window_width", (int)Width);
             await _configManager.SetSettingAsync("window_height", (int)Height);
-            
-            _logger?.LogInformation("窗口位置立即保存: ({X}, {Y}), 大小: {Width}x{Height}", 
+
+            _logger?.LogInformation("窗口位置立即保存: ({X}, {Y}), 大小: {Width}x{Height}",
                 Position.X, Position.Y, Width, Height);
         }
         catch (Exception ex)
@@ -556,154 +525,40 @@ public partial class MainWindow : Window
         {
             _viewModel = vm;
             HomePageView.DataContext = vm.HomeVM;
-            LogPageView.DataContext = vm.LogVM;
-            ConfigPageView.DataContext = vm.ConfigVM;
-            LLBotConfigPageView.DataContext = vm.LLBotConfigVM;
-            IntegrationWizardPageView.DataContext = vm.IntegrationWizardVM;
+            SettingsPageView.DataContext = vm.SettingsVM;
             AboutPageView.DataContext = vm.AboutVM;
-            _animatedPageIndex = vm.SelectedIndex;
             vm.PropertyChanged += ViewModel_PropertyChanged;
             SetVisiblePage(vm.SelectedIndex);
 
             var app = Application.Current as App;
             _configManager = app?.Services?.GetService(typeof(IConfigManager)) as IConfigManager;
             _logger = app?.Services?.GetService(typeof(ILogger<MainWindow>)) as ILogger<MainWindow>;
-            _resourceMonitor = app?.Services?.GetService(typeof(IResourceMonitor)) as IResourceMonitor;
 
             vm.HomeVM.ConfirmDialog = ShowConfirmDialogAsync;
-            vm.HomeVM.ChoiceDialog = ShowChoiceDialogAsync;
             vm.HomeVM.ShowAlertDialog = ShowAlertDialogAsync;
             vm.HomeVM.ShowLoadingDialog = ShowLoadingDialogAsync;
-            vm.HomeVM.ShowAuthTokenDialog = ShowAuthTokenDialogAsync;
-            vm.HomeVM.ShowQRLoginDialog = ShowQRLoginDialogAsync;
-            vm.HomeVM.ShowHeadlessLoginDialog = ShowHeadlessLoginDialogAsync;
+            vm.HomeVM.ShowTextInputDialog = ShowTextInputDialogAsync;
+            vm.SettingsVM.ShowAlertDialog = ShowAlertDialogAsync;
             vm.AboutVM.ConfirmDialog = ShowConfirmDialogAsync;
-            vm.LLBotConfigVM.ShowAlertDialog = ShowAlertDialogAsync;
         }
     }
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName != nameof(MainWindowViewModel.SelectedIndex) || sender is not MainWindowViewModel vm) return;
-        _ = AnimateSelectedPageAsync(vm.SelectedIndex);
+        SetVisiblePage(vm.SelectedIndex);
     }
 
-    private Control? GetPageByIndex(int index) => index switch
-    {
-        0 => HomePageView,
-        1 => LogPageView,
-        2 => ConfigPageView,
-        3 => LLBotConfigPageView,
-        4 => IntegrationWizardPageView,
-        5 => AboutPageView,
-        _ => null
-    };
-
+    // 控制面板里是原生 WebView2 窗口, 盖在 Avalonia 内容上且不参与透明度动画, 所以页面切换不做淡入淡出
     private void SetVisiblePage(int selectedIndex)
     {
-        for (var i = 0; i < 6; i++)
-        {
-            var page = GetPageByIndex(i);
-            if (page is null) continue;
-
-            page.Transitions = null;
-            page.RenderTransform = null;
-            page.Opacity = 1;
-            page.IsVisible = i == selectedIndex;
-        }
-    }
-
-    private async Task AnimateSelectedPageAsync(int selectedIndex)
-    {
-        if (RenderingPerformanceHelper.UseReducedMotion)
-        {
-            SetVisiblePage(selectedIndex);
-            _animatedPageIndex = selectedIndex;
-            return;
-        }
-
-        var oldIndex = _animatedPageIndex;
-        if (oldIndex == selectedIndex) return;
-        _animatedPageIndex = selectedIndex;
-
-        _pageAnimationCts?.Cancel();
-        _pageAnimationCts?.Dispose();
-        _pageAnimationCts = new CancellationTokenSource();
-        var token = _pageAnimationCts.Token;
-
-        await Dispatcher.UIThread.InvokeAsync(async () =>
-        {
-            await Task.Yield();
-
-            var oldPage = GetPageByIndex(oldIndex);
-            var newPage = GetPageByIndex(selectedIndex);
-            if (newPage is null || token.IsCancellationRequested) return;
-
-            for (var i = 0; i < 6; i++)
-            {
-                if (i == oldIndex || i == selectedIndex) continue;
-
-                var page = GetPageByIndex(i);
-                if (page is null) continue;
-                page.Transitions = null;
-                page.Opacity = 1;
-                page.IsVisible = false;
-            }
-
-            oldPage?.Transitions = null;
-            newPage.Transitions = null;
-            if (oldPage is not null) oldPage.Opacity = 1;
-            newPage.Opacity = 0;
-            newPage.IsVisible = true;
-
-            await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Render);
-            if (token.IsCancellationRequested) return;
-
-            if (oldPage is not null)
-            {
-                oldPage.Transitions = new Transitions
-                {
-                    new DoubleTransition
-                    {
-                        Property = OpacityProperty,
-                        Duration = TimeSpan.FromMilliseconds(160),
-                        Easing = new CubicEaseOut()
-                    }
-                };
-                oldPage.Opacity = 0;
-            }
-
-            newPage.Transitions = new Transitions
-            {
-                new DoubleTransition
-                {
-                    Property = OpacityProperty,
-                    Duration = TimeSpan.FromMilliseconds(160),
-                    Easing = new CubicEaseOut()
-                }
-            };
-            newPage.Opacity = 1;
-
-            try
-            {
-                await Task.Delay(170, token);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-
-            if (oldPage is not null)
-            {
-                oldPage.IsVisible = false;
-                oldPage.Opacity = 1;
-            }
-        });
+        HomePageView.IsVisible = selectedIndex == 0;
+        SettingsPageView.IsVisible = selectedIndex == 1;
+        AboutPageView.IsVisible = selectedIndex == 2;
     }
 
     // Avalonia 拒绝给 non-visible owner 挂模态子窗口 ("Cannot show window with non-visible owner").
-    // 启动即最小化到托盘 + auto_start_bot 的组合下, 主窗口已 Hide() 但启动流程仍会弹 Auth Token / 登录对话框,
-    // 若不先恢复主窗口就会抛异常. 恢复出来也是必要行为 — 否则用户看不到弹窗输入.
+    // 启动即最小化到托盘时主窗口已 Hide(), 但启动流程仍可能弹系统时间提示等对话框, 先把主窗口恢复出来.
     private void EnsureVisibleForDialog()
     {
         if (IsVisible && WindowState != WindowState.Minimized) return;
@@ -746,92 +601,11 @@ public partial class MainWindow : Window
         return result == true;
     }
 
-    private async Task<string?> ShowAuthTokenDialogAsync()
+    private async Task<string?> ShowTextInputDialogAsync(string title, string message, string watermark)
     {
         EnsureVisibleForDialog();
-        var app = Application.Current as App;
-        // dev 模式: 不取 validator, AuthTokenDialog 收到 null 时的既有行为就是直接放行
-        var validator = DevMode.IsEnabled
-            ? null
-            : app?.Services?.GetService(typeof(IAuthTokenValidator)) as IAuthTokenValidator;
-        var serverRegion = _configManager != null
-            ? (await _configManager.LoadConfigAsync()).ServerRegion
-            : null;
-        var dialog = new AuthTokenDialog(validator, serverRegion);
+        var dialog = new TextInputDialog(message, watermark) { Title = title };
         return await dialog.ShowDialog<string?>(this);
-    }
-
-    private async Task<string?> ShowQRLoginDialogAsync()
-    {
-        EnsureVisibleForDialog();
-        var app = Application.Current as App;
-        if (app?.Services?.GetService(typeof(ILLBotIpcClient)) is not ILLBotIpcClient ipc)
-        {
-            return null;
-        }
-        var dialog = new QRLoginDialog(ipc);
-        return await ShowFloatingLoginWindowAsync(dialog, () => dialog.LoggedInUin);
-    }
-
-    private async Task<string?> ShowHeadlessLoginDialogAsync(List<LoginAccount> accounts, string scanProtocol, Func<string?, string, Task<bool>> onStart)
-    {
-        EnsureVisibleForDialog();
-        var app = Application.Current as App;
-        if (app?.Services?.GetService(typeof(ILLBotIpcClient)) is not ILLBotIpcClient ipc)
-        {
-            return null;
-        }
-        var dialog = new HeadlessLoginDialog(ipc, accounts, scanProtocol, onStart);
-        return await ShowFloatingLoginWindowAsync(dialog, () => dialog.LoggedInUin);
-    }
-
-    private Task<string?> ShowFloatingLoginWindowAsync(Window dialog, Func<string?> getResult)
-    {
-        var tcs = new TaskCompletionSource<string?>();
-
-        void CenterDialog()
-        {
-            var width = dialog.Width;
-            var height = dialog.Height;
-            if (dialog.Bounds.Width > 0) width = dialog.Bounds.Width;
-            if (dialog.Bounds.Height > 0) height = dialog.Bounds.Height;
-
-            dialog.Position = new PixelPoint(
-                Position.X + Math.Max(0, (int)((Bounds.Width - width) / 2)),
-                Position.Y + 188);
-        }
-
-        void OwnerMoved(object? sender, PixelPointEventArgs e) => CenterDialog();
-        void OwnerResized(object? sender, SizeChangedEventArgs e) => CenterDialog();
-        void DialogResized(object? sender, SizeChangedEventArgs e) => CenterDialog();
-        void DialogOpened(object? sender, EventArgs e) => CenterDialog();
-        void DialogClosed(object? sender, EventArgs e)
-        {
-            PositionChanged -= OwnerMoved;
-            SizeChanged -= OwnerResized;
-            dialog.SizeChanged -= DialogResized;
-            dialog.Opened -= DialogOpened;
-            dialog.Closed -= DialogClosed;
-            tcs.TrySetResult(getResult());
-        }
-
-        PositionChanged += OwnerMoved;
-        SizeChanged += OwnerResized;
-        dialog.SizeChanged += DialogResized;
-        dialog.Opened += DialogOpened;
-        dialog.Closed += DialogClosed;
-        dialog.Show(this);
-        Dispatcher.UIThread.Post(CenterDialog, DispatcherPriority.Render);
-
-        return tcs.Task;
-    }
-
-    private async Task<int> ShowChoiceDialogAsync(string title, string message, string option1, string option2)
-    {
-        EnsureVisibleForDialog();
-        var dialog = new ChoiceDialog(title, message, option1, option2);
-        var result = await dialog.ShowDialog<int?>(this);
-        return result ?? -1;
     }
 
     private bool _isClosingHandled;
@@ -893,9 +667,35 @@ public partial class MainWindow : Window
 
     private void MinimizeToTray()
     {
-        // 隐藏窗口
         Hide();
         SetBackgroundMode(true);
+    }
+
+    // 本进程在 KILL_ON_JOB_CLOSE 的 Job Object 里, 进程一退整棵树 (含 WebView2 的几个进程) 会被直接杀掉, 浏览器进程来不及把
+    // 还没落盘的 cookie 写下去 (Chromium 每 30 秒才提交一次; WebUI 的登录态就是个 cookie). 所以退出前先正常关掉 WebView、放掉
+    // environment, 等浏览器进程自己退出 (通常几百毫秒), 最多等 3 秒.
+    public async Task ShutdownWebViewAsync()
+    {
+        var pid = HomePageView.WebView.BrowserProcessId;
+        HomePageView.WebView.Shutdown();
+        WebView2Runtime.Shutdown();
+        if (pid is not int browserPid) return;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var exited = false;
+        while (sw.ElapsedMilliseconds < 3000)
+        {
+            try
+            {
+                using var process = System.Diagnostics.Process.GetProcessById(browserPid);
+                if (process.HasExited) { exited = true; break; }
+            }
+            catch (ArgumentException) { exited = true; break; }
+            catch (InvalidOperationException) { exited = true; break; }
+            await Task.Delay(50);
+        }
+        if (exited) _logger?.LogInformation("WebView2 浏览器进程已退出 ({Ms} ms)", sw.ElapsedMilliseconds);
+        else _logger?.LogWarning("WebView2 浏览器进程 {Pid} 3 秒内没退出, 交给 Job Object 收尾", browserPid);
     }
 
     public void RestoreFromTray()
@@ -904,12 +704,6 @@ public partial class MainWindow : Window
         WindowState = WindowState.Normal;
         Activate();
         SetBackgroundMode(false);
-        
-        // 恢复监控
-        if (DataContext is MainWindowViewModel vm)
-        {
-            vm.ResumeMonitoring();
-        }
     }
 }
 
