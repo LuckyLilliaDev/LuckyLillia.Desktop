@@ -124,6 +124,11 @@ WebUI 自己的主题 (`stores/themeStore.ts`) 有 light / dark / auto 三档, �
 原因: 本进程在 KILL_ON_JOB_CLOSE 的 Job Object 里 (见 job-object.md), 进程一退 WebView2 的几个进程会被直接杀掉, Chromium 的
 cookie 库每 30 秒才提交一次, 登录后 30 秒内退出就会丢 WebUI 的登录态 cookie (`webui_token`).
 
+工具条 "关闭页面" (`HomeViewModel.IsWebUiClosed` -> `WebView2Host.IsClosed`) 走同一套: 关控制器、`WebView2Runtime.Shutdown`
+放掉 environment, 浏览器进程连同渲染 / GPU 进程自己退出, 内存全部还给系统 (实例照常运行). 原生子 HWND 保留, 只是藏着.
+"打开页面" 先 `WaitForBrowserExitAsync` 等旧浏览器进程退干净 (同一用户数据目录不能和正在退出的浏览器抢), 再新建 environment
+和控制器并导航, 相当于冷启动一次 WebView.
+
 ## WebUI 登录态与多实例
 
 WebUI 把登录 token 存在 cookie `webui_token` (FE `utils/api.ts`), cookie 只按主机名隔离不按端口, 所以同一台机器上的几个实例共用一个

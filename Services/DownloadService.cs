@@ -41,7 +41,6 @@ public interface IDownloadService
 {
     Task<bool> DownloadLLBotAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default);
     Task<bool> DownloadNodeAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default);
-    Task<bool> DownloadFFmpegAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default);
     Task<AppUpdateResult> DownloadAppUpdateAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default);
     bool CheckFileExists(string path);
     string? FindInPath(string executable);
@@ -113,18 +112,6 @@ public class DownloadService : IDownloadService
         _logger.LogInformation("开始下载 Node.js...");
         return await DownloadAndExtractAsync(
             Constants.NpmPackages.Node,
-            Constants.DefaultPaths.LLBotDir,
-            progress,
-            ct,
-            skipFiles: new[] { "package.json" },
-            specificVersion: null);
-    }
-
-    public async Task<bool> DownloadFFmpegAsync(IProgress<DownloadProgress>? progress = null, CancellationToken ct = default)
-    {
-        _logger.LogInformation("开始下载 FFmpeg...");
-        return await DownloadAndExtractAsync(
-            Constants.NpmPackages.FFmpeg,
             Constants.DefaultPaths.LLBotDir,
             progress,
             ct,

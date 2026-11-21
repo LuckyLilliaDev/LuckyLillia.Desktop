@@ -17,7 +17,6 @@ public static class Constants
     {
         public const string LLBot = "llonebot-dist";
         public static string Node => PlatformHelper.GetPlatformPackageName("llonebot-node");
-        public static string FFmpeg => PlatformHelper.GetPlatformPackageName("llonebot-ffmpeg");
         public static string App => PlatformHelper.GetPlatformPackageName("lucky-lillia-desktop");
     }
 
@@ -38,8 +37,6 @@ public static class Constants
         public const string LLBotDir = "bin/llbot";
         public const string LLBotScript = "bin/llbot/llbot.js";
         public static string NodeExe => PlatformHelper.GetExecutablePath("bin/llbot", "node");
-        public static string FFmpegExe => PlatformHelper.GetExecutablePath("bin/llbot", "ffmpeg");
-        public static string FFprobeExe => PlatformHelper.GetExecutablePath("bin/llbot", "ffprobe");
     }
 
     /// <summary>

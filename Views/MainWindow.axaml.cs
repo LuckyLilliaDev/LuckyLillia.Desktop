@@ -680,22 +680,8 @@ public partial class MainWindow : Window
         HomePageView.WebView.Shutdown();
         WebView2Runtime.Shutdown();
         if (pid is not int browserPid) return;
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var exited = false;
-        while (sw.ElapsedMilliseconds < 3000)
-        {
-            try
-            {
-                using var process = System.Diagnostics.Process.GetProcessById(browserPid);
-                if (process.HasExited) { exited = true; break; }
-            }
-            catch (ArgumentException) { exited = true; break; }
-            catch (InvalidOperationException) { exited = true; break; }
-            await Task.Delay(50);
-        }
-        if (exited) _logger?.LogInformation("WebView2 浏览器进程已退出 ({Ms} ms)", sw.ElapsedMilliseconds);
-        else _logger?.LogWarning("WebView2 浏览器进程 {Pid} 3 秒内没退出, 交给 Job Object 收尾", browserPid);
+        // 超时就交给 Job Object 收尾
+        await WebView2Runtime.WaitForBrowserExitAsync(browserPid);
     }
 
     public void RestoreFromTray()

@@ -18,7 +18,7 @@ using System.Threading.Tasks;
 
 namespace LuckyLilliaDesktop.ViewModels;
 
-/// <summary>运行环境 (Node.js / LLBot / FFmpeg) 的准备阶段, 所有实例共用.</summary>
+/// <summary>运行环境 (Node.js / LLBot) 的准备阶段, 所有实例共用.</summary>
 public enum RuntimePhase
 {
     Idle,
@@ -188,7 +188,12 @@ public class HomeViewModel : ViewModelBase
     public bool IsSelectedRunning => SelectedInstance?.Phase == InstancePhase.Running;
     public bool ShowTerminalView => ShowTerminal && SelectedInstance != null;
     public bool CanShowTerminal => SelectedInstance != null;
-    public bool ShowWebView => IsRuntimeReady && IsSelectedRunning && WebViewSupported && !ShowTerminalView;
+    public bool IsWebUiClosed => SelectedInstance?.IsWebUiClosed == true;
+    public bool ShowWebView => IsRuntimeReady && IsSelectedRunning && WebViewSupported && !IsWebUiClosed && !ShowTerminalView;
+    // 工具条的 "关闭页面 / 打开页面": 只在内嵌 WebView 能显示当前实例时出现
+    public bool CanToggleWebUi => IsRuntimeReady && IsSelectedRunning && WebViewSupported;
+    public string ToggleWebUiText => IsWebUiClosed ? "打开页面" : "关闭页面";
+    public bool ShowReopenWebUi => CanToggleWebUi && IsWebUiClosed;
     public bool ShowOverlay => !ShowWebView && !ShowTerminalView;
     public bool ShowSpinner => RuntimePhase == RuntimePhase.Preparing || SelectedInstance?.IsBusy == true;
     public bool ShowProgress => RuntimePhase == RuntimePhase.Downloading;
@@ -231,6 +236,7 @@ public class HomeViewModel : ViewModelBase
                 InstancePhase.Starting => $"正在启动实例 {vm.Name}",
                 InstancePhase.Stopping => $"正在停止实例 {vm.Name}",
                 InstancePhase.Failed => $"实例 {vm.Name} 启动失败",
+                InstancePhase.Running when vm.IsWebUiClosed && WebViewSupported => "页面已关闭",
                 InstancePhase.Running when !string.IsNullOrEmpty(_webViewFailure) => "内嵌 WebView 初始化失败",
                 InstancePhase.Running when OperatingSystem.IsWindows() => "未安装 WebView2 运行时",
                 InstancePhase.Running => "当前系统不支持内嵌 WebView",
@@ -245,7 +251,7 @@ public class HomeViewModel : ViewModelBase
         {
             switch (RuntimePhase)
             {
-                case RuntimePhase.Preparing: return "检查 Node.js、LLBot 与 FFmpeg，缺失的组件会自动下载";
+                case RuntimePhase.Preparing: return "检查 Node.js 与 LLBot，缺失的组件会自动下载";
                 case RuntimePhase.Downloading: return string.Empty;
                 case RuntimePhase.Failed: return RuntimeMessage;
             }
@@ -254,6 +260,7 @@ public class HomeViewModel : ViewModelBase
             return vm.Phase switch
             {
                 InstancePhase.Starting => vm.Port is int port ? $"等待 WebUI 就绪 (端口 {port})" : string.Empty,
+                InstancePhase.Running when vm.IsWebUiClosed && WebViewSupported => $"实例 {vm.Name} 仍在后台运行，只是关掉了页面显示。",
                 InstancePhase.Running => string.IsNullOrEmpty(_webViewFailure)
                     ? $"可以先在系统浏览器中打开 WebUI: {vm.Url}"
                     : $"{_webViewFailure}\n可以先在系统浏览器中打开 WebUI: {vm.Url}",
@@ -272,7 +279,8 @@ public class HomeViewModel : ViewModelBase
         nameof(ShowNewInstanceButton), nameof(ShowOpenInBrowser), nameof(ShowInstallWebView2), nameof(ShowLogsButton),
         nameof(ShowErrorIcon), nameof(CanStartStop), nameof(StartStopText), nameof(CanRestart), nameof(CanRefresh),
         nameof(CanDelete), nameof(CanToggleAutoStart), nameof(SelectedIsAutoStart), nameof(HasWebUiUrl), nameof(WebUiUrl),
-        nameof(OverlayTitle), nameof(OverlayMessage), nameof(HasOverlayMessage)
+        nameof(OverlayTitle), nameof(OverlayMessage), nameof(HasOverlayMessage),
+        nameof(IsWebUiClosed), nameof(CanToggleWebUi), nameof(ToggleWebUiText), nameof(ShowReopenWebUi)
     ];
 
     private void RaiseDerived()
@@ -337,6 +345,8 @@ public class HomeViewModel : ViewModelBase
     public ReactiveCommand<Unit, Unit> UpdateCommand { get; }
     public ReactiveCommand<Unit, Unit> ViewLogsCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenLogsCommand { get; }
+    public ReactiveCommand<Unit, Unit> ToggleWebUiCommand { get; }
+    public ReactiveCommand<Unit, Unit> ReopenWebUiCommand { get; }
 
     public HomeViewModel(
         IProcessManager processManager,
@@ -391,7 +401,7 @@ public class HomeViewModel : ViewModelBase
         RefreshInstancesCommand = ReactiveCommand.Create(() => LoadInstances(), outputScheduler: AvaloniaUiScheduler.Instance);
         OpenInBrowserCommand = ReactiveCommand.Create(() =>
         {
-            if (HasWebUiUrl) OpenExternal(WebUiUrl!);
+            if (HasWebUiUrl) OpenExternal(SelectedInstance!.Url!);
         }, outputScheduler: AvaloniaUiScheduler.Instance);
         InstallWebView2Command = ReactiveCommand.Create(() => OpenExternal(WebView2Runtime.InstallerUrl), outputScheduler: AvaloniaUiScheduler.Instance);
         CancelDownloadCommand = ReactiveCommand.Create(() =>
@@ -402,6 +412,14 @@ public class HomeViewModel : ViewModelBase
         UpdateCommand = ReactiveCommand.Create(() => NavigateToAbout?.Invoke(), outputScheduler: AvaloniaUiScheduler.Instance);
         ViewLogsCommand = ReactiveCommand.Create(() => { ShowTerminal = true; }, outputScheduler: AvaloniaUiScheduler.Instance);
         OpenLogsCommand = ReactiveCommand.Create(() => OpenExternal(Path.GetFullPath("logs")), outputScheduler: AvaloniaUiScheduler.Instance);
+        ToggleWebUiCommand = ReactiveCommand.Create(() =>
+        {
+            if (CanToggleWebUi) SetWebUiClosed(!IsWebUiClosed);
+        }, outputScheduler: AvaloniaUiScheduler.Instance);
+        ReopenWebUiCommand = ReactiveCommand.Create(() =>
+        {
+            if (CanToggleWebUi) SetWebUiClosed(false);
+        }, outputScheduler: AvaloniaUiScheduler.Instance);
 
         _ = CheckForUpdatesAsync();
         _ = InitializeAsync();
@@ -827,11 +845,6 @@ public class HomeViewModel : ViewModelBase
                 configChanged = true;
             }
 
-            if (!FFmpegHelper.CheckFFmpegExists() || !FFmpegHelper.CheckFFprobeExists())
-            {
-                if (!await DownloadAsync("FFmpeg", _downloadService.DownloadFFmpegAsync)) return false;
-            }
-
             RuntimePhase = RuntimePhase.Preparing;
             if (configChanged)
             {
@@ -841,7 +854,6 @@ public class HomeViewModel : ViewModelBase
 
             if (!File.Exists(config.NodePath)) return RuntimeFailed($"Node.js 文件不存在: {config.NodePath}");
             if (!File.Exists(config.LLBotPath)) return RuntimeFailed($"LLBot 脚本不存在: {config.LLBotPath}");
-            if (!FFmpegHelper.CheckFFmpegExists() || !FFmpegHelper.CheckFFprobeExists()) return RuntimeFailed("FFmpeg / FFprobe 不可用");
 
             var versionError = CheckVersionRequirement(config);
             if (versionError != null) return RuntimeFailed(versionError);
@@ -1028,6 +1040,15 @@ public class HomeViewModel : ViewModelBase
     }
 
     public void ClearPageError() => PageError = string.Empty;
+
+    private void SetWebUiClosed(bool closed)
+    {
+        if (SelectedInstance is not { } vm || vm.IsWebUiClosed == closed) return;
+        _logger.LogInformation("{Action} WebUI 页面: 实例 {Name}", closed ? "关闭" : "重新打开", vm.Name);
+        PageError = string.Empty;
+        if (closed) ShowTerminal = false;
+        vm.IsWebUiClosed = closed;
+    }
 
     // ---- 更新检查 ----
 

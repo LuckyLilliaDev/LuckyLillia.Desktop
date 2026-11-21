@@ -24,7 +24,7 @@ Desktop 起它时工作目录就是 `llbot.js` 所在目录, 所以 `Utils/LLBot
 
 1. 运行时准备 (`EnsureRuntimeAsync`, 所有实例共用, 只做一次): 系统时间校验 (偏差 > 1 分钟阻止, 网络不可用放行),
    Node.js >= 24 (配置 -> PATH -> `bin/llbot/node.exe` -> 下载), `bin/llbot/llbot.js` (缺则下载 `llonebot-dist`),
-   FFmpeg / FFprobe (缺则下载), LLBot 主版本 >= 8. 下载改了路径就 read-modify-write 存回 `app_settings.json`.
+   LLBot 主版本 >= 8 (FFmpeg 已不是必需组件, 不再检测 / 下载). 下载改了路径就 read-modify-write 存回 `app_settings.json`.
 2. 读该实例 `settings.json` 的 `webui` 段 (`ReadEndpoint`; 文件缺失 / 坏掉 / 字段缺失退回 `127.0.0.1:3080`).
    `webui.enable=false` 直接失败, 遮罩提示去改回来.
 3. 分配端口 (`TcpPorts.FindFree`): 从配置的端口起往上找第一个空闲且没被别的实例占的端口, 以 `--webui-port <端口>` 传给

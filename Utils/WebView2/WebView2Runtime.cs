@@ -56,12 +56,36 @@ internal static class WebView2Runtime
         }
     }
 
-    /// <summary>放掉缓存的 environment, 浏览器进程没有客户端后会自己正常退出 (把 cookie 等落盘). 之后不能再建 WebView.</summary>
+    /// <summary>
+    /// 放掉缓存的 environment, 浏览器进程没有客户端后会自己正常退出 (把 cookie 等落盘).
+    /// 之后再调 <see cref="GetEnvironmentAsync"/> 会新建一个; 新建前先用 <see cref="WaitForBrowserExitAsync"/> 等旧浏览器进程退干净.
+    /// </summary>
     public static void Shutdown()
     {
         var task = _environment;
         _environment = null;
         if (task is { IsCompletedSuccessfully: true }) ((object)task.Result as ComObject)?.FinalRelease();
+    }
+
+    /// <summary>等浏览器主进程自己退出, 超时返回 false.</summary>
+    public static async Task<bool> WaitForBrowserExitAsync(int pid, int timeoutMs = 3000)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var exited = false;
+        while (!exited && sw.ElapsedMilliseconds < timeoutMs)
+        {
+            try
+            {
+                using var process = System.Diagnostics.Process.GetProcessById(pid);
+                exited = process.HasExited;
+            }
+            catch (ArgumentException) { exited = true; }
+            catch (InvalidOperationException) { exited = true; }
+            if (!exited) await Task.Delay(50);
+        }
+        if (exited) Log.Information("WebView2 浏览器进程已退出 ({Ms} ms)", sw.ElapsedMilliseconds);
+        else Log.Warning("WebView2 浏览器进程 {Pid} {Timeout} ms 内没退出", pid, timeoutMs);
+        return exited;
     }
 
     public static Task<ICoreWebView2Environment> GetEnvironmentAsync()

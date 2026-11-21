@@ -30,8 +30,18 @@ public class InstanceViewModel : ViewModelBase
         {
             if (_phase == value) return;
             this.RaiseAndSetIfChanged(ref _phase, value);
+            // 页面关闭只对这一次运行有效, 实例停了再启动时 WebUI 照常显示
+            if (value != InstancePhase.Running) IsWebUiClosed = false;
             RaiseDerived();
         }
+    }
+
+    // 用户在工具条上关掉了 WebUI 页面 (像关浏览器标签, 实例照常运行): WebView2 整个关掉, 浏览器进程退出; 可以重新打开
+    private bool _isWebUiClosed;
+    public bool IsWebUiClosed
+    {
+        get => _isWebUiClosed;
+        set => this.RaiseAndSetIfChanged(ref _isWebUiClosed, value);
     }
 
     // Desktop 分配并以 --webui-port 传给 LLBot 的端口 (旧版 LLBot 自己换端口时是实测到的那个)

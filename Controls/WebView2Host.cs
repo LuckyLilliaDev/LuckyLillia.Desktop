@@ -35,6 +35,13 @@ public sealed partial class WebView2Host : NativeControlHost
     public static readonly StyledProperty<string?> SourceProperty =
         AvaloniaProperty.Register<WebView2Host, string?>(nameof(Source));
 
+    /// <summary>
+    /// true = 像关浏览器标签一样把 WebView 真正关掉: 控制器 Close + 放掉 environment, 浏览器进程 (连同渲染 / GPU 进程) 随后自己退出;
+    /// 改回 false 时等旧浏览器进程退干净, 再新建 environment 和控制器并导航到 <see cref="Source"/>.
+    /// </summary>
+    public static readonly StyledProperty<bool> IsClosedProperty =
+        AvaloniaProperty.Register<WebView2Host, bool>(nameof(IsClosed));
+
     private const uint WS_CHILD = 0x40000000;
     private const uint WS_VISIBLE = 0x10000000;
     private const uint WS_CLIPCHILDREN = 0x02000000;
@@ -81,7 +88,16 @@ public sealed partial class WebView2Host : NativeControlHost
         set => SetValue(SourceProperty, value);
     }
 
+    public bool IsClosed
+    {
+        get => GetValue(IsClosedProperty);
+        set => SetValue(IsClosedProperty, value);
+    }
+
     public bool IsReady => _core != null;
+
+    // 关闭后还在退出中的浏览器进程: 重新打开前要等它退干净, 同一个用户数据目录不能和正在退出的浏览器进程抢
+    private int? _exitingBrowserPid;
 
     public WebView2Host()
     {
@@ -158,6 +174,11 @@ public sealed partial class WebView2Host : NativeControlHost
     {
         base.OnPropertyChanged(change);
         if (change.Property == SourceProperty) NavigateToSource();
+        else if (change.Property == IsClosedProperty)
+        {
+            if (IsClosed) CloseBrowser();
+            else _ = ReopenAsync();
+        }
         else if (change.Property == BoundsProperty || change.Property == IsVisibleProperty) RefreshBoundsFromWindow();
     }
 
@@ -187,7 +208,7 @@ public sealed partial class WebView2Host : NativeControlHost
         if (_hwnd == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
         Hosts[_hwnd] = this;
         UnlayerHolder(parent.Handle);
-        _ = InitializeAsync(_hwnd, ++_generation);
+        if (!IsClosed) _ = InitializeAsync(_hwnd, ++_generation);
         return new PlatformHandle(_hwnd, "HWND");
     }
 
@@ -272,6 +293,31 @@ public sealed partial class WebView2Host : NativeControlHost
         if (_hwnd == 0 || _controller == null || !OperatingSystem.IsWindows()) return;
         if (!Win32.GetClientRect(_hwnd, out var rect)) return;
         SetBounds(rect.Right - rect.Left, rect.Bottom - rect.Top);
+    }
+
+    private void CloseBrowser()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        _generation++; // 还在初始化的话, 让它拿到控制器后直接关掉
+        var pid = BrowserProcessId;
+        if (pid != null) _exitingBrowserPid = pid;
+        CloseWebView();
+        WebView2Runtime.Shutdown();
+        Log.Information("WebView2 已关闭, 浏览器进程 {Pid} 随后自行退出", pid);
+    }
+
+    private async Task ReopenAsync()
+    {
+        if (_hwnd == 0 || _controller != null) return;
+        var generation = ++_generation;
+        if (_exitingBrowserPid is int pid)
+        {
+            await WebView2Runtime.WaitForBrowserExitAsync(pid);
+            if (generation != _generation) return;
+            _exitingBrowserPid = null;
+        }
+        Log.Information("WebView2 重新打开");
+        await InitializeAsync(_hwnd, generation);
     }
 
     private async Task InitializeAsync(nint hwnd, int generation)
