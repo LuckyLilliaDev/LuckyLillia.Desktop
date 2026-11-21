@@ -16,7 +16,7 @@ namespace LuckyLilliaDesktop.Services;
 
 /// <summary>
 /// LLBot 实例进程管理: 每个实例一个 Node 进程. 优雅停止 = 向它的控制台发 Ctrl+C (LLBot 处理 SIGINT 后自己退出),
-/// 超时再进程树兜底; Windows Job Object 兜底 Desktop 崩溃; LL_PARENT_PID 让 LLBot 在 Desktop 消失时自己退出.
+/// 超时再进程树兜底; Windows Job Object 兜底 Desktop 崩溃; --parent-pid 让 LLBot 在 Desktop 消失时自己退出.
 /// </summary>
 public partial class ProcessManager : IProcessManager, IDisposable
 {
@@ -209,8 +209,6 @@ public partial class ProcessManager : IProcessManager, IDisposable
 
         startInfo.Environment["NODE_SKIP_PLATFORM_CHECK"] = "1";
         startInfo.Environment["FORCE_COLOR"] = "3";
-        // Desktop 没了 LLBot 自己退出 (hostLifecycle.ts)
-        startInfo.Environment["LL_PARENT_PID"] = Environment.ProcessId.ToString();
         if (!string.IsNullOrWhiteSpace(options.HttpProxy))
         {
             _logger.LogInformation("已设置 HTTP 代理环境变量: {Proxy}", MaskProxyCredentials(options.HttpProxy));
@@ -223,6 +221,8 @@ public partial class ProcessManager : IProcessManager, IDisposable
 
         // 传给 LLBot 脚本的参数 (都放在 -- 之后). 登录方式 / 协议 / QQ 路径不由 Desktop 指定, 全在 WebUI 里配.
         startInfo.ArgumentList.Add("--");
+        // Desktop 没了 LLBot 自己退出 (hostLifecycle.ts)
+        startInfo.ArgumentList.Add($"--parent-pid={Environment.ProcessId}");
         startInfo.ArgumentList.Add("--instance");
         startInfo.ArgumentList.Add(instance);
         startInfo.ArgumentList.Add("--webui-port");

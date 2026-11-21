@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -32,7 +33,14 @@ public static partial class LLBotWebUi
 
     public static readonly WebUiEndpoint DefaultEndpoint = new(true, DefaultHost, DefaultPort);
 
-    private static readonly HttpClient ProbeClient = new() { Timeout = TimeSpan.FromSeconds(3) };
+    // Probe the local instance directly. System proxies, redirects and stored cookies can otherwise
+    // hide the authentication header or make another service appear to be this instance.
+    private static readonly HttpClient ProbeClient = new(new HttpClientHandler
+    {
+        UseProxy = false,
+        AllowAutoRedirect = false,
+        UseCookies = false
+    }) { Timeout = TimeSpan.FromSeconds(3) };
 
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", RegexOptions.CultureInvariant)]
     private static partial Regex InstanceNamePattern();
@@ -134,6 +142,23 @@ public static partial class LLBotWebUi
 
     public static string Url(string connectHost, int port) =>
         connectHost.Contains(':') ? $"http://[{connectHost}]:{port}" : $"http://{connectHost}:{port}";
+
+    /// <summary>优先匹配实例 PID; 端口表不可用时才用本机 HTTP 特征检测.</summary>
+    internal static async Task<int?> FindReadyPortAsync(int port, int? pid,
+        IReadOnlyList<TcpListenerTable.Listener>? listeners, Func<int, Task<bool>> isWebUi)
+    {
+        if (listeners != null && pid is int ownPid)
+        {
+            var owned = listeners.Where(l => l.Pid == ownPid).Select(l => l.Port).Distinct().ToList();
+            if (owned.Contains(port)) return port;
+            foreach (var candidate in owned)
+            {
+                if (await isWebUi(candidate)) return candidate;
+            }
+            return null;
+        }
+        return await isWebUi(port) ? port : null;
+    }
 
     /// <summary>
     /// 这个端口上跑的是不是 LLBot 的 WebUI: /api/* 一律先过它的登录中间件, 拒绝时带 X-Webui-Auth 头 (BE/auth.ts),

@@ -754,6 +754,10 @@ public class HomeViewModel : ViewModelBase
     private async Task<string?> WaitForWebUiAsync(InstanceViewModel vm, string host, int port)
     {
         var deadline = DateTime.UtcNow + WebUiReadyTimeout;
+        var warnedListenerFailure = false;
+        var lastProbe = string.Empty;
+        _logger.LogInformation("等待实例 {Instance} 的 WebUI: PID={Pid}, 地址={Url}",
+            vm.Name, _processManager.GetPid(vm.Name), LLBotWebUi.Url(host, port));
         while (DateTime.UtcNow < deadline)
         {
             if (vm.Phase != InstancePhase.Starting) return null;
@@ -768,22 +772,32 @@ public class HomeViewModel : ViewModelBase
             if (listeners != null && pid is int ownPid)
             {
                 var owned = listeners.Where(l => l.Pid == ownPid).Select(l => l.Port).Distinct().ToList();
-                if (owned.Contains(port)) return LLBotWebUi.Url(host, port);
-                foreach (var candidate in owned.Where(c => c != port))
+                var portOwners = listeners.Where(l => l.Port == port).Select(l => l.Pid).Distinct();
+                lastProbe = $"PID={ownPid}, 进程监听端口=[{string.Join(", ", owned)}], 目标端口 {port} 的 PID=[{string.Join(", ", portOwners)}]";
+            }
+            else
+            {
+                lastProbe = $"PID={pid}, 端口归属不可用，HTTP 探测 {LLBotWebUi.Url(host, port)} 未就绪";
+                if (OperatingSystem.IsWindows() && !warnedListenerFailure)
                 {
-                    if (!await LLBotWebUi.IsWebUiAsync(host, candidate)) continue;
-                    _logger.LogWarning("实例 {Instance}: LLBot 没有采用分配的端口 {Port}, 实际监听 {Actual}", vm.Name, port, candidate);
-                    vm.Port = candidate;
-                    return LLBotWebUi.Url(host, candidate);
+                    warnedListenerFailure = true;
+                    _logger.LogWarning("实例 {Instance}: 无法读取 TCP 端口归属，改用本机 WebUI HTTP 特征检测 (PID={Pid}, 端口={Port})",
+                        vm.Name, pid, port);
                 }
             }
-            else if (await LLBotWebUi.IsWebUiAsync(host, port))
+            var readyPort = await LLBotWebUi.FindReadyPortAsync(port, pid, listeners,
+                candidate => LLBotWebUi.IsWebUiAsync(host, candidate));
+            if (readyPort is int actualPort)
             {
-                return LLBotWebUi.Url(host, port);
+                if (actualPort != port)
+                    _logger.LogWarning("实例 {Instance}: LLBot 没有采用分配的端口 {Port}, 实际监听 {Actual}", vm.Name, port, actualPort);
+                vm.Port = actualPort;
+                return LLBotWebUi.Url(host, actualPort);
             }
 
             await Task.Delay(500);
         }
+        _logger.LogWarning("实例 {Instance} 的 WebUI 就绪检测超时: {Probe}", vm.Name, lastProbe);
         return null;
     }
 

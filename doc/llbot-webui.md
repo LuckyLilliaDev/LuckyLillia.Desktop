@@ -30,14 +30,15 @@ Desktop 起它时工作目录就是 `llbot.js` 所在目录, 所以 `Utils/LLBot
 3. 分配端口 (`TcpPorts.FindFree`): 从配置的端口起往上找第一个空闲且没被别的实例占的端口, 以 `--webui-port <端口>` 传给
    LLBot (这个参数让 LLBot 在内存里覆盖 `webui.port`, WebUI 里该字段只读, 不写回文件). 端口和配置不同时只在日志里记警告, 界面不提示.
 4. `IProcessManager.StartInstanceAsync(实例名, LLBotLaunchOptions)`: 参数只有 `--instance <名>` / `--webui-port <端口>` /
-   `--cdn china` (配置 `server_region`) / `--dev` (配置 `dev`), 环境变量 `LL_PARENT_PID` 和代理. 进程输出以实例名为前缀
+   `--parent-pid=<Desktop PID>` / `--cdn china` (配置 `server_region`) / `--dev` (配置 `dev`), 环境变量传代理. 进程输出以实例名为前缀
    进日志 (`[default] ...`).
 5. 等 WebUI 就绪 (`WaitForWebUiAsync`, 最多 90 秒, 每 500ms 一轮):
    - Windows: 查系统 TCP 监听表 (`TcpListenerTable`, `GetExtendedTcpTable`), 分配的端口被**这个实例的 PID** 监听即就绪.
      端口能连上不算数 -- 别的程序 / 别的实例占着同一个端口时连通探测会被骗.
    - LLBot 没用分配的端口 (端口在它启动前一瞬被占, 或旧版本不认 `--webui-port`) 时, 在该 PID 监听的其他端口里找
      带 WebUI 特征的 (`IsWebUiAsync`: GET `/api/login-info` 响应带 `x-webui-auth` 头), 找到就改用 (日志里有警告).
-   - 非 Windows 没有监听表, 只靠 `IsWebUiAsync` 探分配的端口.
+   - 非 Windows 没有监听表, 或 Windows 读取失败时, 用 `IsWebUiAsync` 探分配的端口. HTTP 探测直接连接本机, 不走系统代理、不跟随重定向、不携带 cookie; 普通 HTTP 200 不算就绪, 必须有 WebUI 的鉴权特征头.
+   - `LLBotWebUi.FindReadyPortAsync` 共用上述判断; 能读到完整端口表时仍只认可自己的 PID, 不会连到其他实例占用的端口. 开始等待时记录 PID / 地址, 端口表不可用时警告一次, 超时记录该 PID 的监听端口和目标端口的实际拥有者.
    - 期间进程退出 -> Stopped (显示退出码); 被用户停掉 -> 停止流程接管.
 6. 就绪后 `Url` 赋值, 选中该实例时 `WebView2Host` 导航. 切换下拉框只是换 `WebUiUrl`, 不动进程.
 
@@ -47,6 +48,12 @@ Windows 上 Node 的监听 socket 允许别的进程再绑同一个端口 (SO_RE
 空闲 -- 本机 `tsx watch` 跑着的 LLBot 占着 3080, 试绑定 `0.0.0.0:3080` / `127.0.0.1:3080` 全部成功. 所以
 `TcpPorts.FindFree` 先查 TCP 监听表 (IPv4 + IPv6), 没有监听表的平台才只靠试绑定. 实测: 3080 被占时分配 3081,
 LLBot 日志 `Webui 服务器已启动 127.0.0.1:3081`, 0.5 秒内就绪.
+
+2026-11-09 修复: `GetExtendedTcpTable` 读取出错曾被当成成功取得空表或部分表, 导致浏览器能打开 WebUI,
+Desktop 却不执行 HTTP 兜底并一直等到超时. 现在任一地址族读取失败都返回 `null`, 成功取得空表才返回空列表;
+查询大小后监听表增长时按新大小重试 (最多 3 次). `TcpListenerTableTests` 覆盖 API 失败、增长和实际 IPv4 / IPv6
+监听 PID; `LLBotWebUiProbeTests` 覆盖从表读取失败到本机 HTTP 就绪的完整判断, 以及不同 PID、端口顺延、代理和重定向.
+这是已复现的错误处理漏洞; 没有发生机器的 Desktop 日志时, 不能仅凭“等待就绪”截图认定它是唯一原因.
 
 ## 停止 / 重启
 
@@ -60,7 +67,7 @@ LLBot 日志 `Webui 服务器已启动 127.0.0.1:3081`, 0.5 秒内就绪.
   更新后 `ResumeAfterUpdateAsync` 重新过一遍运行时检查 (版本变了) 再把它们拉起来.
 - 进程自己退出 (`IProcessManager.StatusChanged` -> Stopped / Error) 进入 Stopped, 遮罩显示退出码和 "启动实例" 按钮.
 - Desktop 退出时 `StopAllAsync` 并行停所有实例; Desktop 崩溃由 Job Object 兜底 (见 [job-object.md](job-object.md)),
-  Unix 上 LLBot 自己盯 `LL_PARENT_PID`.
+  Unix 上 LLBot 自己盯 `--parent-pid` 传入的 PID.
 - 不要去碰 QQ 进程: QQ 归 LLBot 的原生模块管.
 
 ## 页面状态
