@@ -15,8 +15,8 @@ public static class Constants
     /// </summary>
     public static class NpmPackages
     {
-        public const string LLBot = "llonebot-dist";
-        public static string Node => PlatformHelper.GetPlatformPackageName("llonebot-node");
+        public const string LLBot = "@luckylillia-dev/luckylillia";
+        public static string Node => PlatformHelper.GetPlatformPackageName("@luckylillia-dev/node");
         public static string App => PlatformHelper.GetPlatformPackageName("lucky-lillia-desktop");
     }
 

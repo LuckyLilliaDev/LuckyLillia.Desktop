@@ -44,18 +44,27 @@ public class NpmApiClient
         {
             try
             {
-                var url = $"{registry}/{packageName}";
-                _logger?.LogDebug("尝试获取包信息: {Url}", url);
-
-                var response = await _httpClient.GetAsync(url, ct);
-                if (!response.IsSuccessStatusCode)
+                string? json = null;
+                foreach (var url in GetMetadataCandidateUrls(registry, packageName))
                 {
-                    _logger?.LogWarning("获取包信息失败: {StatusCode} from {Registry}", response.StatusCode, registry);
+                    _logger?.LogDebug("尝试获取包信息: {Url}", url);
+
+                    using var response = await _httpClient.GetAsync(CreateRequestUri(url), ct);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        json = await response.Content.ReadAsStringAsync(ct);
+                        break;
+                    }
+
+                    _logger?.LogWarning("获取包信息失败: {StatusCode} from {Url}", response.StatusCode, url);
+                }
+
+                if (json == null)
+                {
                     continue;
                 }
 
-                var json = await response.Content.ReadAsStringAsync(ct);
-                var doc = JsonDocument.Parse(json);
+                using var doc = JsonDocument.Parse(json);
                 var root = doc.RootElement;
 
                 string version;
@@ -145,6 +154,22 @@ public class NpmApiClient
         return urls.ToArray();
     }
 
+    internal static string[] GetMetadataCandidateUrls(string registry, string packageName)
+    {
+        if (packageName.StartsWith('@') && packageName.Contains('/'))
+        {
+            return
+            [
+                $"{registry}/{packageName.Replace("/", "%2f")}",
+                $"{registry}/{packageName}"
+            ];
+        }
+
+        return [$"{registry}/{packageName}"];
+    }
+
+    internal static Uri CreateRequestUri(string url) =>
+        new(url, new UriCreationOptions { DangerousDisablePathAndQueryCanonicalization = true });
 }
 
 /// <summary>
