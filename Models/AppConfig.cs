@@ -1,12 +1,11 @@
-using System.Collections.Generic;
 using System.Text.Json.Serialization;
 using LuckyLilliaDesktop.Utils;
 
 namespace LuckyLilliaDesktop.Models;
 
 /// <summary>
-/// app_settings.json. 只放 Desktop 自己的设置; LLBot 的配置 (登录方式 / QQ 路径 / 协议 / WebUI 端口...) 全在 LLBot WebUI 里改.
-/// 字段归属与写回约定见 doc/config-persistence.md.
+/// app_settings.json. 只放 Desktop 自己的设置; LLBot 的配置 (实例列表 / 登录方式 / QQ 路径 / 协议 / WebUI 端口...)
+/// 全在 LLBot WebUI 里改. 字段归属与写回约定见 doc/config-persistence.md.
 /// </summary>
 public class AppConfig
 {
@@ -16,9 +15,10 @@ public class AppConfig
     [JsonPropertyName("node_path")]
     public string NodePath { get; set; } = Constants.DefaultPaths.NodeExe;
 
-    // 程序启动时自动拉起的 LLBot 实例名. 实例目录在 <LLBot>/data/instances/, 见 doc/llbot-webui.md
-    [JsonPropertyName("auto_start_instances")]
-    public List<string> AutoStartInstances { get; set; } = [LLBotWebUi.DefaultInstance];
+    // 备用 WebUI 端口: 配置的网关端口被占时最近一次实际用的端口. WebView 的 cookie 名 / localStorage
+    // 都跟着端口走, 端口一变 WebUI 密码等就要重新输入; 配置端口被占时优先回到这个端口, 让来源保持不变.
+    [JsonPropertyName("webui_fallback_port")]
+    public int? WebUiFallbackPort { get; set; } = null;
 
     // 开发模式, 没有命令行开关, 见 DevMode
     [JsonPropertyName("dev")]

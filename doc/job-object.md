@@ -58,11 +58,10 @@ info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
 #### 停止流程
 
 ```csharp
-public async Task StopAllAsync()
+public async Task StopAsync()
 {
-    // 每个实例一个 LLBot 子进程, 并行停: 先向其控制台发 Ctrl+C (LLBot 当 SIGINT), 最多等 35 秒让它收拾原生会话
-    // (含它自己拉起的 QQ), 没退出再 KillProcessTreeAsync 兜底. Desktop 不单独杀 QQ.
-    await Task.WhenAll(RunningInstances.Select(StopInstanceAsync));
+    // 停止唯一的 LLBot 管理进程: 先向其控制台发 Ctrl+C (管理器收到 SIGINT 后在 25 秒内逐一停掉所有子实例),
+    // 最多等 35 秒, 没退出再 KillProcessTreeAsync 兜底. Desktop 不单独杀 QQ.
 }
 ```
 

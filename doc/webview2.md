@@ -129,9 +129,14 @@ cookie 库每 30 秒才提交一次, 登录后 30 秒内退出就会丢 WebUI �
 "打开页面" 先 `WaitForBrowserExitAsync` 等旧浏览器进程退干净 (同一用户数据目录不能和正在退出的浏览器抢), 再新建 environment
 和控制器并导航, 相当于冷启动一次 WebView.
 
-## WebUI 登录态与多实例
+## WebUI 统一登录态
 
-WebUI 把登录 token 存在 cookie `webui_token` (FE `utils/api.ts`), cookie 只按主机名隔离不按端口, 所以同一台机器上的几个实例共用一个
-cookie, 而每个实例的密码 (`webui_token.txt`) 各不相同: 登录了 bot2 就把 default 的 token 覆盖掉, 切回 default 又要输一次.
-这是 WebUI 侧的设计, 桌面端绕不开; 要修得在 WebUI 里按端口命名 cookie 或改用 localStorage (按 origin 隔离) + `X-Webui-Token` 头.
-另一条路是桌面端每个实例一个 WebView2 profile (cookie 彼此隔离), 代价是每个实例一个渲染进程.
+WebUI 把统一网关登录存在 cookie `webui_token_<端口>` (FE `utils/api.ts` `tokenCookieName`; 值是 sha256(密码) 的小写 hex, path=/, 30 天).
+所有实例共用同一个网关端口和登录态, 只要端口稳定, 一次登录即可访问全部实例; 但端口被占顺延时 cookie 名会跟着端口变.
+
+桌面端因此在每次导航前替用户登录: `WebView2Host.CookieProvider` (HomePage 接到 `HomeViewModel.WebUiLoginCookie`) 给出要预置的 cookie,
+`NavigateToSource` 先用 CDP `Network.setCookie` (不需要 `Network.enable`, `url` 定 host-only 域) 写进 cookie 库, 回调里再 `Navigate`.
+值由 `LLBotWebUi.LoginCookie` 从统一密码文件 `data/webui_token.txt` 算 (不存在时兜底读旧版 `data/instances/default/webui_token.txt`, 去首尾空白后 sha256), 每次导航重新读文件,
+密码改了下次导航就跟上. 还没设密码 (文件不存在 / 为空) 时不预置, WebUI 照常让用户设. 设 cookie 失败只记警告, 照常导航.
+cookie 值不进日志. 安全上没有新增暴露面: 桌面端本来就能读这个文件; 只是桌面端窗口里打开 WebUI 不再问密码, 普通浏览器访问照旧要密码.
+`Reload` 不重新预置 (cookie 已在库里). 另见 doc/llbot-webui.md 的备用端口 (`webui_fallback_port`), 端口稳定也让 localStorage 里的其他状态不丢.

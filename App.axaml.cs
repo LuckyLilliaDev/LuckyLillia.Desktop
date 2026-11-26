@@ -64,7 +64,7 @@ public partial class App : Application
         {
             var processManager = Services?.GetService<IProcessManager>();
             
-            processManager?.ForceKillAll();
+            processManager?.ForceKill();
         }
         catch (Exception ex)
         {
@@ -79,12 +79,15 @@ public partial class App : Application
         // 配置 Serilog - 每次启动创建新日志文件，限制单文件大小并清理旧日志
         CleanupOldLogs("logs", maxAgeDays: 7, maxTotalFiles: 50);
         var logFileName = $"logs/{DateTime.Now:yyyyMMdd_HHmmss}.log";
+        // Desktop 自己的日志也进终端日志; 收集器要等 DI 建好再接上, 之前的日志先缓存
+        var collectorSink = new LogCollectorSink();
         var logger = new LoggerConfiguration()
             .WriteTo.Console(outputTemplate: "{Timestamp:HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
             .WriteTo.File(logFileName,
                 outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {Message:lj}{NewLine}{Exception}",
                 fileSizeLimitBytes: 10 * 1024 * 1024,  // 单文件最大 10MB
                 rollOnFileSizeLimit: true)              // 超限后自动创建新文件 (_001, _002...)
+            .WriteTo.Sink(collectorSink)
             .CreateLogger();
         
         // 设置为全局 logger
@@ -113,6 +116,7 @@ public partial class App : Application
         });
 
         Services = services.BuildServiceProvider();
+        collectorSink.Attach(Services.GetRequiredService<ILogCollector>());
     }
 
     public override void OnFrameworkInitializationCompleted()
@@ -182,20 +186,20 @@ public partial class App : Application
 
     private async Task ExitCoreAsync()
     {
-        Log.Information("应用正在退出，等待各实例清理原生会话");
+        Log.Information("应用正在退出，等待 LLBot 停止所有实例并清理原生会话");
         var processManager = Services.GetService<IProcessManager>();
-        // WebView2 和实例互不相干, 并行收尾 (WebView 要先于进程退出正常关掉, 见 MainWindow.ShutdownWebViewAsync)
+        // WebView2 和 LLBot 互不相干, 并行收尾 (WebView 要先于进程退出正常关掉, 见 MainWindow.ShutdownWebViewAsync)
         var webViewShutdown = (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow is MainWindow mainWindow
             ? mainWindow.ShutdownWebViewAsync()
             : Task.CompletedTask;
         try
         {
-            if (processManager != null) await processManager.StopAllAsync();
+            if (processManager != null) await processManager.StopAsync();
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "正常退出失败，强制清理实例进程树");
-            processManager?.ForceKillAll();
+            Log.Error(ex, "正常退出失败，强制清理 LLBot 进程树");
+            processManager?.ForceKill();
         }
         try { await webViewShutdown; }
         catch (Exception ex) { Log.Warning(ex, "关闭 WebView2 失败"); }

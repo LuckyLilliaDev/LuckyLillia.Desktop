@@ -19,6 +19,8 @@ public interface ILogCollector
 {
     IObservable<LogEntry> LogStream { get; }
     IEnumerable<LogEntry> GetRecentLogs(int count);
+    /// <summary>直接加一条 (Desktop 自己的日志走这里, 见 LogCollectorSink).</summary>
+    void Add(LogEntry entry);
     void AttachProcess(string processName, Process process);
     void DetachProcess(string processName);
     /// <summary>processName 为 null 时清全部, 否则只清那个实例的.</summary>
@@ -32,9 +34,13 @@ public interface ILogCollector
 public class LogCollector : ILogCollector, IDisposable
 {
     private const int MaxLogEntries = 1000;
+    /// <summary>实例输出转写进 Serilog 时用的属性名, LogCollectorSink 靠它跳过这些行 (已经在收集器里了).</summary>
+    public const string InstanceOutputProperty = "InstanceOutput";
 
     private readonly ILogger<LogCollector> _logger;
-    private readonly Subject<LogEntry> _logSubject = new();
+    // 实例的 stdout / stderr 读取线程和 Desktop 日志会并发推送, Rx 要求 OnNext 串行, 所以包一层同步
+    private readonly Subject<LogEntry> _subject = new();
+    private readonly ISubject<LogEntry> _logSubject;
     private readonly ConcurrentQueue<LogEntry> _logQueue = new();
     private readonly Dictionary<string, CancellationTokenSource> _processCancellations = new();
 
@@ -43,6 +49,17 @@ public class LogCollector : ILogCollector, IDisposable
     public LogCollector(ILogger<LogCollector> logger)
     {
         _logger = logger;
+        _logSubject = Subject.Synchronize(_subject);
+    }
+
+    public void Add(LogEntry entry)
+    {
+        _logQueue.Enqueue(entry);
+        while (_logQueue.Count > MaxLogEntries)
+        {
+            _logQueue.TryDequeue(out _);
+        }
+        _logSubject.OnNext(entry);
     }
 
     public void AttachProcess(string processName, Process process)
@@ -90,27 +107,16 @@ public class LogCollector : ILogCollector, IDisposable
                     continue;
 
                 var entry = new LogEntry(DateTime.Now, processName, level, line);
+                Add(entry);
 
-                // 添加到队列
-                _logQueue.Enqueue(entry);
-
-                // 限制队列大小
-                while (_logQueue.Count > MaxLogEntries)
-                {
-                    _logQueue.TryDequeue(out _);
-                }
-
-                // 推送到观察者
-                _logSubject.OnNext(entry);
-
-                // 同时记录到应用日志
+                // 同时记录到应用日志 (日志文件). 属性名固定为 InstanceOutputProperty, LogCollectorSink 据此不再回送
                 if (level == "stderr")
                 {
-                    _logger.LogError("[{Process}] {Message}", processName, line);
+                    _logger.LogError("[{InstanceOutput}] {Message}", processName, line);
                 }
                 else
                 {
-                    _logger.LogInformation("[{Process}] {Message}", processName, line);
+                    _logger.LogInformation("[{InstanceOutput}] {Message}", processName, line);
                 }
             }
         }
@@ -160,6 +166,6 @@ public class LogCollector : ILogCollector, IDisposable
             cts.Dispose();
         }
         _processCancellations.Clear();
-        _logSubject.Dispose();
+        _subject.Dispose();
     }
 }

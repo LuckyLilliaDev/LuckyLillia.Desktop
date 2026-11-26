@@ -1,5 +1,6 @@
 using LuckyLilliaDesktop.Models;
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 namespace LuckyLilliaDesktop.Services;
@@ -15,5 +16,8 @@ public interface IConfigManager
     Task<AppConfig> LoadConfigAsync();
     Task<bool> SaveConfigAsync(AppConfig config);
     T GetSetting<T>(string key, T defaultValue);
+    IReadOnlyList<string>? GetStringListSetting(string key);
+    int? GetIntDictionarySetting(string key, string entryKey);
     Task SetSettingAsync<T>(string key, T value);
+    Task RemoveSettingAsync(string key);
 }

@@ -226,38 +226,10 @@
                                        FontSize="15"
                                        Foreground="{DynamicResource TextSecondary}"
                                        FontWeight="Medium"/>
-                            <StackPanel Orientation="Horizontal" Spacing="8" Height="24">
-                                <PathIcon Data="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"
-                                          Width="20" Height="20"
-                                          Foreground="{DynamicResource SuccessColor}"
-                                          IsVisible="{Binding LLBotIsLatest}"/>
-                                <TextBlock Text="已是最新版本"
-                                           FontSize="12"
-                                           Foreground="{DynamicResource SuccessColor}"
-                                           VerticalAlignment="Center"
-                                           IsVisible="{Binding LLBotIsLatest}"/>
-                                <PathIcon Data="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"
-                                          Width="20" Height="20"
-                                          Foreground="#F59E0B"
-                                          IsVisible="{Binding LLBotHasUpdate}"/>
-                                <TextBlock Text="{Binding LLBotLatestVersion, StringFormat=有新版本: {0}}"
-                                           FontSize="12"
-                                           Foreground="#F59E0B"
-                                           FontWeight="Bold"
-                                           VerticalAlignment="Center"
-                                           IsVisible="{Binding LLBotHasUpdate}"/>
-                                <Button Command="{Binding OpenLLBotReleaseCommand}"
-                                        Background="Transparent"
-                                        Padding="4,0"
-                                        Cursor="Hand"
-                                        IsVisible="{Binding LLBotHasUpdate}"
-                                        VerticalAlignment="Center">
-                                    <TextBlock Text="查看详情"
-                                               FontSize="12"
-                                               Foreground="{DynamicResource PrimaryBrush}"
-                                               TextDecorations="Underline"/>
-                                </Button>
-                            </StackPanel>
+                            <TextBlock Text="请在控制面板中的关于更新"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource TextSecondary}"
+                                       Opacity="0.8"/>
                         </StackPanel>
                     </StackPanel>
                 </Border>

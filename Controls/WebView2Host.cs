@@ -17,6 +17,9 @@ using Serilog;
 
 namespace LuckyLilliaDesktop.Controls;
 
+/// <summary>导航前预置到 <see cref="Url"/> 上的 cookie (host-only, path=/).</summary>
+public sealed record WebViewCookie(string Url, string Name, string Value, TimeSpan Lifetime);
+
 public sealed class WebViewNavigationCompletedEventArgs(bool isSuccess, int webErrorStatus) : EventArgs
 {
     public bool IsSuccess { get; } = isSuccess;
@@ -95,6 +98,15 @@ public sealed partial class WebView2Host : NativeControlHost
     }
 
     public bool IsReady => _core != null;
+
+    /// <summary>
+    /// 每次导航前调用, 返回要先写进 cookie 库的 cookie (null = 不用). 用来让 WebUI 免登录: 端口一变 WebUI 的登录 cookie 就对不上了.
+    /// 每次导航都重新取, 密码改了下次导航就跟上.
+    /// </summary>
+    public Func<string, WebViewCookie?>? CookieProvider { get; set; }
+
+    // 导航请求的序号: 设 cookie 是异步的, 回调回来时 Source 可能又变了, 只有最新一次请求才真正导航
+    private int _navigateSeq;
 
     // 关闭后还在退出中的浏览器进程: 重新打开前要等它退干净, 同一个用户数据目录不能和正在退出的浏览器进程抢
     private int? _exitingBrowserPid;
@@ -378,9 +390,50 @@ public sealed partial class WebView2Host : NativeControlHost
     private void NavigateToSource()
     {
         var source = Source;
-        if (_core == null || string.IsNullOrWhiteSpace(source)) return;
+        var core = _core;
+        if (core == null || string.IsNullOrWhiteSpace(source)) return;
+        var seq = ++_navigateSeq;
+
+        WebViewCookie? cookie = null;
+        try { cookie = CookieProvider?.Invoke(source); }
+        catch (Exception ex) { Log.Warning(ex, "WebView2 取导航前 cookie 失败"); }
+        if (cookie == null)
+        {
+            Navigate(core, source);
+            return;
+        }
+
+        // CDP Network.setCookie 不需要先 Network.enable; url 决定 host-only 的域和 path. 和 WebUI 前端 setCookie 的写法一致
+        // (path=/, 不设 SameSite / HttpOnly), 同名同域同路径会覆盖前端自己存的那条. cookie 值不进日志.
+        var parameters = new System.Text.Json.Nodes.JsonObject
+        {
+            ["name"] = cookie.Name,
+            ["value"] = cookie.Value,
+            ["url"] = cookie.Url,
+            ["path"] = "/",
+            ["expires"] = DateTimeOffset.UtcNow.Add(cookie.Lifetime).ToUnixTimeSeconds(),
+        }.ToJsonString();
+        // 回调对象交给原生侧后由 COM 引用计数保活 (见 WebView2Interop.cs 的 CCW 说明)
+        var handler = new DevToolsMethodCompletedHandler((hr, _) =>
+        {
+            if (hr < 0) Log.Warning("WebView2 预置 cookie {Name} 失败: 0x{Hr:X8}", cookie.Name, hr);
+            else Log.Information("WebView2 已为 {Url} 预置 cookie {Name}", cookie.Url, cookie.Name);
+            // 这期间又导航了 / WebView 关掉重开了: 交给新的那次
+            if (seq != _navigateSeq || !ReferenceEquals(core, _core)) return;
+            Navigate(core, source);
+        });
+        try { core.CallDevToolsProtocolMethod("Network.setCookie", parameters, handler); }
+        catch (COMException ex)
+        {
+            Log.Warning(ex, "WebView2 预置 cookie {Name} 失败", cookie.Name);
+            Navigate(core, source);
+        }
+    }
+
+    private void Navigate(ICoreWebView2 core, string source)
+    {
         Log.Information("WebView2 导航: {Url}", source);
-        try { _core.Navigate(source); }
+        try { core.Navigate(source); }
         catch (COMException ex)
         {
             Log.Error(ex, "WebView2 导航失败: {Url}", source);

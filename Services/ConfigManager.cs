@@ -96,6 +96,38 @@ public class ConfigManager : IConfigManager
         }
     }
 
+    public IReadOnlyList<string>? GetStringListSetting(string key)
+    {
+        lock (_lock)
+        {
+            if (_rawJson == null || !_rawJson.TryGetPropertyValue(key, out var node) || node is not JsonArray array)
+                return null;
+            var result = new List<string>();
+            foreach (var item in array)
+            {
+                if (item is JsonValue v && v.TryGetValue<string>(out var s)) result.Add(s);
+            }
+            return result;
+        }
+    }
+
+    public int? GetIntDictionarySetting(string key, string entryKey)
+    {
+        lock (_lock)
+        {
+            if (_rawJson == null
+                || !_rawJson.TryGetPropertyValue(key, out var node)
+                || node is not JsonObject obj
+                || !obj.TryGetPropertyValue(entryKey, out var valueNode)
+                || valueNode is not JsonValue value
+                || !value.TryGetValue<int>(out var port))
+            {
+                return null;
+            }
+            return port;
+        }
+    }
+
     public async Task SetSettingAsync<T>(string key, T value)
     {
         try
@@ -116,6 +148,28 @@ public class ConfigManager : IConfigManager
         }
     }
 
+    public async Task RemoveSettingAsync(string key)
+    {
+        try
+        {
+            string? json = null;
+            lock (_lock)
+            {
+                if (_rawJson != null && _rawJson.Remove(key))
+                    json = _rawJson.ToJsonString(AppJsonContext.Default.Options);
+            }
+            if (json != null)
+            {
+                await File.WriteAllTextAsync(ConfigPath, json);
+                _logger.LogInformation("已移除旧设置项: {Key}", key);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "移除设置项失败: {Key}", key);
+        }
+    }
+
     private static T ConvertFromJsonNode<T>(JsonNode node, T defaultValue)
     {
         try
@@ -125,6 +179,8 @@ public class ConfigManager : IConfigManager
                 return (T)(object)(node.GetValue<string>() ?? string.Empty);
             if (targetType == typeof(int))
                 return (T)(object)node.GetValue<int>();
+            if (targetType == typeof(int?))
+                return (T)(object?)node.GetValue<int>()!;
             if (targetType == typeof(bool))
                 return (T)(object)node.GetValue<bool>();
             if (targetType == typeof(bool?))
@@ -146,6 +202,7 @@ public class ConfigManager : IConfigManager
             string stringValue => JsonValue.Create(stringValue),
             int intValue => JsonValue.Create(intValue),
             bool boolValue => JsonValue.Create(boolValue),
+            IDictionary<string, int> ints => new JsonObject(ints.Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)JsonValue.Create(kv.Value)))),
             IEnumerable<string> strings => new JsonArray(strings.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray()),
             _ => throw new NotSupportedException($"不支持保存设置类型: {typeof(T).FullName}")
         };

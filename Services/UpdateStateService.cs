@@ -9,12 +9,7 @@ public class UpdateState
     public string AppLatestVersion { get; set; } = "";
     public string AppReleaseUrl { get; set; } = "";
 
-
-    public bool LLBotHasUpdate { get; set; }
-    public string LLBotLatestVersion { get; set; } = "";
-    public string LLBotReleaseUrl { get; set; } = "";
-
-    public bool HasAnyUpdate => AppHasUpdate || LLBotHasUpdate;
+    public bool HasAnyUpdate => AppHasUpdate;
     public bool IsChecked { get; set; }
 }
 
@@ -46,9 +41,6 @@ public class UpdateStateService : IUpdateStateService
             case "app":
             case "管理器":
                 state.AppHasUpdate = false;
-                break;
-            case "llbot":
-                state.LLBotHasUpdate = false;
                 break;
         }
         _stateSubject.OnNext(state);

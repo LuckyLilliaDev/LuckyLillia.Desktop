@@ -21,6 +21,7 @@
     <Compile Include="../Utils/StartupCommandLine.cs" Link="Utils\StartupCommandLine.cs" />
     <Compile Include="../Utils/LLBotWebUi.cs" Link="Utils\LLBotWebUi.cs" />
     <Compile Include="../Utils/TcpListenerTable.cs" Link="Utils\TcpListenerTable.cs" />
+    <Compile Include="../Utils/ProcessTree.cs" Link="Utils\ProcessTree.cs" />
   </ItemGroup>
 
 </Project>

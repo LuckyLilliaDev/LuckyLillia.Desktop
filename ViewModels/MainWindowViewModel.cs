@@ -26,7 +26,12 @@ public class MainWindowViewModel : ViewModelBase
     public int SelectedIndex
     {
         get => _selectedIndex;
-        set => this.RaiseAndSetIfChanged(ref _selectedIndex, value);
+        set
+        {
+            if (_selectedIndex == value) return;
+            this.RaiseAndSetIfChanged(ref _selectedIndex, value);
+            if (value == 2) _ = AboutVM.LoadVersionsAsync();
+        }
     }
 
     public string ThemeMode
@@ -90,8 +95,8 @@ public class MainWindowViewModel : ViewModelBase
         homeViewModel.NavigateToAbout = () => SelectedIndex = 2;
         homeViewModel.OnDownloadCompleted = async () => await AboutVM.LoadVersionsAsync();
 
-        // 更新 LLBot 前后由控制面板统一停 / 起所有实例, 保持它们的状态一致
-        aboutViewModel.StopServicesCallback = () => HomeVM.StopAllForUpdateAsync();
+        // 更新 LLBot 前后由控制面板统一停 / 起 LLBot 进程
+        aboutViewModel.StopServicesCallback = () => HomeVM.StopForUpdateAsync();
         aboutViewModel.RestartServicesCallback = () => HomeVM.ResumeAfterUpdateAsync();
 
         _logger.LogInformation("MainWindowViewModel 已初始化");

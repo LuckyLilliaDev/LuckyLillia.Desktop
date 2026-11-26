@@ -537,7 +537,6 @@ public partial class MainWindow : Window
             vm.HomeVM.ConfirmDialog = ShowConfirmDialogAsync;
             vm.HomeVM.ShowAlertDialog = ShowAlertDialogAsync;
             vm.HomeVM.ShowLoadingDialog = ShowLoadingDialogAsync;
-            vm.HomeVM.ShowTextInputDialog = ShowTextInputDialogAsync;
             vm.SettingsVM.ShowAlertDialog = ShowAlertDialogAsync;
             vm.AboutVM.ConfirmDialog = ShowConfirmDialogAsync;
         }
@@ -599,13 +598,6 @@ public partial class MainWindow : Window
         var dialog = new ConfirmDialog(message);
         var result = await dialog.ShowDialog<bool?>(this);
         return result == true;
-    }
-
-    private async Task<string?> ShowTextInputDialogAsync(string title, string message, string watermark)
-    {
-        EnsureVisibleForDialog();
-        var dialog = new TextInputDialog(message, watermark) { Title = title };
-        return await dialog.ShowDialog<string?>(this);
     }
 
     private bool _isClosingHandled;

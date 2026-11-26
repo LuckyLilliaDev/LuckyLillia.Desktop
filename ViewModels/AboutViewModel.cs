@@ -77,35 +77,6 @@ public class AboutViewModel : ViewModelBase
         set => this.RaiseAndSetIfChanged(ref _appReleaseUrl, value);
     }
 
-    // 更新状态 - LLBot
-    private bool _llbotIsLatest;
-    public bool LLBotIsLatest
-    {
-        get => _llbotIsLatest;
-        set => this.RaiseAndSetIfChanged(ref _llbotIsLatest, value);
-    }
-
-    private bool _llbotHasUpdate;
-    public bool LLBotHasUpdate
-    {
-        get => _llbotHasUpdate;
-        set => this.RaiseAndSetIfChanged(ref _llbotHasUpdate, value);
-    }
-
-    private string _llbotLatestVersion = string.Empty;
-    public string LLBotLatestVersion
-    {
-        get => _llbotLatestVersion;
-        set => this.RaiseAndSetIfChanged(ref _llbotLatestVersion, value);
-    }
-
-    private string _llbotReleaseUrl = string.Empty;
-    public string LLBotReleaseUrl
-    {
-        get => _llbotReleaseUrl;
-        set => this.RaiseAndSetIfChanged(ref _llbotReleaseUrl, value);
-    }
-
     // 检查更新状态
     private bool _isCheckingUpdate;
     public bool IsCheckingUpdate
@@ -153,7 +124,6 @@ public class AboutViewModel : ViewModelBase
     // 命令
     public ReactiveCommand<Unit, Unit> CheckOrUpdateCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenAppReleaseCommand { get; }
-    public ReactiveCommand<Unit, Unit> OpenLLBotReleaseCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenDocsCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenQQGroupCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenAppGitHubCommand { get; }
@@ -186,7 +156,6 @@ public class AboutViewModel : ViewModelBase
 
         // 打开链接命令
         OpenAppReleaseCommand = ReactiveCommand.Create(() => OpenUrl(AppReleaseUrl), outputScheduler: AvaloniaUiScheduler.Instance);
-        OpenLLBotReleaseCommand = ReactiveCommand.Create(() => OpenUrl(LLBotReleaseUrl), outputScheduler: AvaloniaUiScheduler.Instance);
         OpenDocsCommand = ReactiveCommand.Create(() => OpenUrl("https://luckylillia.com"), outputScheduler: AvaloniaUiScheduler.Instance);
         OpenQQGroupCommand = ReactiveCommand.Create(() => OpenUrl(QQGroupUrl), outputScheduler: AvaloniaUiScheduler.Instance);
         OpenAppGitHubCommand = ReactiveCommand.Create(() => OpenUrl(AppGitHubUrl), outputScheduler: AvaloniaUiScheduler.Instance);
@@ -209,11 +178,6 @@ public class AboutViewModel : ViewModelBase
         AppLatestVersion = state.AppLatestVersion;
         AppReleaseUrl = state.AppReleaseUrl;
         AppIsLatest = !state.AppHasUpdate;
-
-        LLBotHasUpdate = state.LLBotHasUpdate;
-        LLBotLatestVersion = state.LLBotLatestVersion;
-        LLBotReleaseUrl = state.LLBotReleaseUrl;
-        LLBotIsLatest = !state.LLBotHasUpdate;
 
         HasAnyUpdate = state.HasAnyUpdate;
         CheckUpdateButtonText = HasAnyUpdate ? "立即更新" : "检查更新";
@@ -269,21 +233,24 @@ public class AboutViewModel : ViewModelBase
         // 清除之前的更新状态
         AppIsLatest = false;
         AppHasUpdate = false;
-        LLBotIsLatest = false;
-        LLBotHasUpdate = false;
         HasAnyUpdate = false;
 
         try
         {
-            _logger.LogInformation("开始检查更新...");
+            _logger.LogInformation("开始检查管理器更新...");
+            await LoadVersionsAsync();
 
-            // 检查应用更新
+            // 仅检查桌面端管理器更新；LLBot 本体更新统一由 WebUI 负责
             var appUpdate = await _updateChecker.CheckAppUpdateAsync(AppVersion);
+            var state = new UpdateState { IsChecked = true };
             if (appUpdate.HasUpdate)
             {
                 AppHasUpdate = true;
                 AppLatestVersion = appUpdate.LatestVersion;
                 AppReleaseUrl = appUpdate.ReleaseUrl;
+                state.AppHasUpdate = true;
+                state.AppLatestVersion = appUpdate.LatestVersion;
+                state.AppReleaseUrl = appUpdate.ReleaseUrl;
                 _logger.LogInformation("发现应用新版本: {Version}", appUpdate.LatestVersion);
             }
             else
@@ -291,29 +258,10 @@ public class AboutViewModel : ViewModelBase
                 AppIsLatest = true;
             }
 
-            // 检查 LLBot 更新
-            if (LLBotVersion != "未配置" && LLBotVersion != "未知" && LLBotVersion != "检测中...")
-            {
-                var llbotUpdate = await _updateChecker.CheckLLBotUpdateAsync(LLBotVersion);
-                if (llbotUpdate.HasUpdate)
-                {
-                    LLBotHasUpdate = true;
-                    LLBotLatestVersion = llbotUpdate.LatestVersion;
-                    LLBotReleaseUrl = llbotUpdate.ReleaseUrl;
-                    _logger.LogInformation("发现 LLBot 新版本: {Version}", llbotUpdate.LatestVersion);
-                }
-                else
-                {
-                    LLBotIsLatest = true;
-                }
-            }
-            else
-            {
-                LLBotIsLatest = true;
-            }
+            _updateStateService.UpdateState(state);
 
             // 更新按钮状态
-            HasAnyUpdate = AppHasUpdate || LLBotHasUpdate;
+            HasAnyUpdate = AppHasUpdate;
             CheckUpdateButtonText = HasAnyUpdate ? "立即更新" : "检查更新";
 
             _logger.LogInformation("更新检查完成");
@@ -331,14 +279,14 @@ public class AboutViewModel : ViewModelBase
 
     private async Task DownloadAllUpdatesAsync()
     {
-        if (IsDownloadingUpdate) return;
+        if (IsDownloadingUpdate || !AppHasUpdate) return;
 
-        var wasRunning = _processManager.IsAnyProcessRunning;
+        var wasRunning = _processManager.IsRunning;
 
         // 如果服务正在运行，弹出确认对话框
         if (wasRunning && ConfirmDialog != null)
         {
-            var confirmed = await ConfirmDialog("确认更新", "LLBot 正在运行中，更新需要先停止它。更新完成后将自动重新启动。\n\n确定要继续吗？");
+            var confirmed = await ConfirmDialog("确认更新", "LLBot 正在运行中，更新管理器需要先停止它。\n\n确定要继续吗？");
             if (!confirmed)
             {
                 _logger.LogInformation("用户取消更新");
@@ -349,11 +297,6 @@ public class AboutViewModel : ViewModelBase
         IsDownloadingUpdate = true;
         DownloadProgress = 0;
 
-        // 收集需要更新的组件，按顺序：LLBot（含原生组件）→ 管理器
-        var updates = new List<string>();
-        if (LLBotHasUpdate) updates.Add("LLBot");
-        if (AppHasUpdate) updates.Add("管理器");
-
         try
         {
             // 如果有进程在运行，先停止
@@ -362,7 +305,7 @@ public class AboutViewModel : ViewModelBase
                 DownloadStatus = "正在停止 LLBot...";
                 _logger.LogInformation("更新前停止 LLBot...");
                 if (StopServicesCallback != null) await StopServicesCallback();
-                else await _processManager.StopAllAsync();
+                else await _processManager.StopAsync();
                 await Task.Delay(1000);
             }
 
@@ -372,36 +315,16 @@ public class AboutViewModel : ViewModelBase
                 DownloadStatus = p.Status;
             });
 
-            // 依次更新各组件
-            foreach (var component in updates)
+            DownloadStatus = "正在更新: 管理器";
+            DownloadProgress = 0;
+
+            var result = await _downloadService.DownloadAppUpdateAsync(progress);
+            if (result.Success)
             {
-                DownloadStatus = $"正在更新: {component}";
-                DownloadProgress = 0;
-
-                bool success;
-                switch (component)
-                {
-                    case "LLBot":
-                        success = await _downloadService.DownloadLLBotAsync(progress);
-                        if (success)
-                        {
-                            LLBotHasUpdate = false;
-                            LLBotIsLatest = true;
-                            _updateStateService.ClearUpdate("LLBot");
-                        }
-                        break;
-
-                    case "管理器":
-                        var result = await _downloadService.DownloadAppUpdateAsync(progress);
-                        if (result.Success)
-                        {
-                            _pendingAppUpdateScript = result.UpdateScriptPath;
-                            AppHasUpdate = false;
-                            AppIsLatest = true;
-                            _updateStateService.ClearUpdate("管理器");
-                        }
-                        break;
-                }
+                _pendingAppUpdateScript = result.UpdateScriptPath;
+                AppHasUpdate = false;
+                AppIsLatest = true;
+                _updateStateService.ClearUpdate("管理器");
             }
 
             DownloadStatus = "更新完成！";
@@ -422,8 +345,8 @@ public class AboutViewModel : ViewModelBase
             }
             else if (wasRunning && RestartServicesCallback != null)
             {
-                // 更新前服务在运行，自动重启
-                _logger.LogInformation("更新完成，自动重启 LLBot...");
+                // 下载未生成更新脚本且更新前服务在运行，自动恢复启动
+                _logger.LogInformation("恢复启动 LLBot...");
                 DownloadStatus = "正在重新启动 LLBot...";
                 await Task.Delay(500);
                 await RestartServicesCallback();

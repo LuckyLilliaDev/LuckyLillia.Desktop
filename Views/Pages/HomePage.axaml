@@ -29,31 +29,21 @@
             <Setter Property="Height" Value="14"/>
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         </Style>
-        <Style Selector="ToggleButton.toolbar:checked /template/ ContentPresenter#PART_ContentPresenter">
+        <Style Selector="Button.toolbar.active /template/ ContentPresenter#PART_ContentPresenter">
             <Setter Property="Background" Value="{DynamicResource PrimaryBrushSoft}"/>
             <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}"/>
         </Style>
-        <Style Selector="ToggleButton.toolbar:checked PathIcon">
+        <Style Selector="Button.toolbar.active PathIcon">
             <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}"/>
         </Style>
         <Style Selector="Button.overlay">
             <Setter Property="Padding" Value="18,10"/>
             <Setter Property="CornerRadius" Value="14"/>
         </Style>
-        <Style Selector="ComboBox.instance">
-            <Setter Property="MinWidth" Value="170"/>
-            <Setter Property="Padding" Value="10,4"/>
-            <Setter Property="CornerRadius" Value="10"/>
-            <Setter Property="Background" Value="{DynamicResource CardBackgroundStrong}"/>
-            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}"/>
-        </Style>
-        <Style Selector="MenuItem">
-            <Setter Property="FontSize" Value="13"/>
-        </Style>
     </UserControl.Styles>
 
     <Grid RowDefinitions="Auto,*">
-        <!-- 窄工具条: 实例选择 + 状态 + 操作 -->
+        <!-- 窄工具条: LLBot 状态 + 统一操作 (多实例管理在嵌入的 WebUI 中完成) -->
         <Border Grid.Row="0"
                 Height="44"
                 Padding="12,0,8,0"
@@ -73,15 +63,26 @@
                             <TextBlock Text="有更新" Foreground="{DynamicResource WarningColor}"/>
                         </StackPanel>
                     </Button>
-                    <ToggleButton Classes="toolbar"
-                                  IsChecked="{Binding ShowTerminal}"
-                                  IsEnabled="{Binding CanShowTerminal}"
-                                  ToolTip.Tip="查看当前实例的终端输出，再点一次回到 WebUI">
+                    <!-- 主页 / 终端日志 两个按钮切换, 当前所在的那个高亮 -->
+                    <Button Classes="toolbar"
+                            Classes.active="{Binding !ShowTerminal}"
+                            Command="{Binding ShowHomeCommand}"
+                            ToolTip.Tip="回到主页 (WebUI)">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <PathIcon Data="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
+                            <TextBlock Text="主页"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Classes="toolbar"
+                            Classes.active="{Binding ShowTerminal}"
+                            Command="{Binding ViewLogsCommand}"
+                            IsEnabled="{Binding CanShowTerminal}"
+                            ToolTip.Tip="查看终端输出">
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <PathIcon Data="M20 4H4c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10zm-2-1h-6v-2h6v2zM7.5 17l-1.41-1.41L8.67 13l-2.59-2.59L7.5 9l4 4-4 4z"/>
                             <TextBlock Text="终端日志"/>
                         </StackPanel>
-                    </ToggleButton>
+                    </Button>
                     <Button Classes="toolbar"
                             x:Name="RefreshButton"
                             Click="RefreshButton_Click"
@@ -92,11 +93,11 @@
                             <TextBlock Text="刷新"/>
                         </StackPanel>
                     </Button>
-                    <!-- 像关浏览器标签一样只关掉页面显示 (实例继续运行), 再点一次重新打开 -->
+                    <!-- 像关浏览器标签一样只关掉页面显示 (LLBot 继续在后台运行), 再点一次重新打开 -->
                     <Button Classes="toolbar"
                             Command="{Binding ToggleWebUiCommand}"
                             IsVisible="{Binding CanToggleWebUi}"
-                            ToolTip.Tip="关闭 / 重新打开页面 (实例继续运行)">
+                            ToolTip.Tip="关闭 / 重新打开页面 (LLBot 继续在后台运行)">
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <Panel>
                                 <PathIcon IsVisible="{Binding !IsWebUiClosed}"
@@ -108,66 +109,41 @@
                         </StackPanel>
                     </Button>
                     <Button Classes="toolbar"
+                            Command="{Binding RestartCommand}"
+                            IsVisible="{Binding CanRestart}"
+                            ToolTip.Tip="重启 LLBot (停止并重新拉起所有实例)">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <PathIcon Data="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
+                            <TextBlock Text="重启"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Classes="toolbar"
                             Command="{Binding StartStopCommand}"
                             IsEnabled="{Binding CanStartStop}"
-                            ToolTip.Tip="启动 / 停止当前实例">
+                            ToolTip.Tip="启动 / 停止 LLBot">
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <PathIcon Data="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/>
                             <TextBlock Text="{Binding StartStopText}"/>
                         </StackPanel>
                     </Button>
-                    <Button Classes="toolbar" ToolTip.Tip="更多操作">
-                        <PathIcon Data="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/>
-                        <Button.Flyout>
-                            <MenuFlyout Placement="BottomEdgeAlignedRight">
-                                <MenuItem Header="重启当前实例" Command="{Binding RestartCommand}" IsEnabled="{Binding CanRestart}"/>
-                                <MenuItem Header="随桌面端启动" Command="{Binding ToggleAutoStartCommand}" IsEnabled="{Binding CanToggleAutoStart}"
-                                          ToggleType="CheckBox" IsChecked="{Binding SelectedIsAutoStart, Mode=OneWay}"/>
-                                <Separator/>
-                                <MenuItem Header="删除当前实例..." Command="{Binding DeleteInstanceCommand}" IsEnabled="{Binding CanDelete}"/>
-                                <MenuItem Header="重新扫描实例目录" Command="{Binding RefreshInstancesCommand}"/>
-                            </MenuFlyout>
-                        </Button.Flyout>
-                    </Button>
                 </StackPanel>
 
-                <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                    <TextBlock Text="实例"
+                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <Ellipse Width="8" Height="8" VerticalAlignment="Center"
+                             Fill="{Binding BotStatus, Converter={StaticResource StatusToColorConverter}}"/>
+                    <TextBlock Text="LLBot"
                                FontSize="13"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextPrimary}"
+                               VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding PortText}"
+                               IsVisible="{Binding HasPort}"
+                               FontSize="12"
                                Foreground="{DynamicResource TextSecondary}"
                                VerticalAlignment="Center"/>
-                    <!-- 状态只靠颜色点: 绿 运行中 / 黄 启动或停止中 / 灰 未运行 / 红 失败; 名字右边是端口.
-                         列表末尾多一项 "新建实例", 选它不是选实例 (HomeViewModel.PickerSelection) -->
-                    <ComboBox Classes="instance"
-                              x:Name="InstancePicker"
-                              ItemsSource="{Binding PickerItems}"
-                              SelectedItem="{Binding PickerSelection}"
-                              SelectionChanged="InstancePicker_SelectionChanged"
-                              VerticalAlignment="Center">
-                        <ComboBox.DataTemplates>
-                            <DataTemplate DataType="{x:Type vm:InstanceViewModel}" x:DataType="vm:InstanceViewModel">
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <Ellipse Width="8" Height="8" VerticalAlignment="Center"
-                                             Fill="{Binding BotStatus, Converter={StaticResource StatusToColorConverter}}"/>
-                                    <TextBlock Text="{Binding Name}" VerticalAlignment="Center"/>
-                                    <TextBlock Text="{Binding PortText}"
-                                               IsVisible="{Binding HasPort}"
-                                               Foreground="{DynamicResource TextSecondary}"
-                                               VerticalAlignment="Center"/>
-                                </StackPanel>
-                            </DataTemplate>
-                            <DataTemplate DataType="{x:Type vm:NewInstanceEntry}" x:DataType="vm:NewInstanceEntry">
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <PathIcon Width="10" Height="10" VerticalAlignment="Center"
-                                              Foreground="{DynamicResource PrimaryBrush}"
-                                              Data="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
-                                    <TextBlock Text="新建实例..." Foreground="{DynamicResource PrimaryBrush}" VerticalAlignment="Center"/>
-                                </StackPanel>
-                            </DataTemplate>
-                        </ComboBox.DataTemplates>
-                    </ComboBox>
                     <TextBlock Text="{Binding PageError}"
                                IsVisible="{Binding HasPageError}"
+                               Margin="6,0,0,0"
                                FontSize="12"
                                Foreground="{DynamicResource DangerColor}"
                                TextTrimming="CharacterEllipsis"
@@ -183,12 +159,12 @@
                                    IsClosed="{Binding IsWebUiClosed}"
                                    IsVisible="{Binding ShowWebView}"/>
 
-            <!-- 选中实例的终端输出. 外面套一层是因为 LogPage 自己的 DataContext 换成了 TerminalLog, 可见性要绑在 HomeViewModel 上 -->
+            <!-- 终端日志 (LLBot + Desktop 日志) -->
             <Border IsVisible="{Binding ShowTerminalView}">
                 <views:LogPage DataContext="{Binding TerminalLog}"/>
             </Border>
 
-            <!-- 准备 / 下载 / 实例未运行 / 启动中 / 不支持内嵌 时的遮罩 -->
+            <!-- 准备 / 下载 / 未运行 / 启动中 / 不支持内嵌 时的遮罩 -->
             <Border IsVisible="{Binding ShowOverlay}"
                     Background="{DynamicResource MainBackground}"
                     CornerRadius="0,0,12,12">
@@ -252,10 +228,6 @@
                                     IsVisible="{Binding ShowStartButton}"
                                     Command="{Binding StartStopCommand}"
                                     Content="{Binding StartButtonText}"/>
-                            <Button Classes="ActionButton"
-                                    IsVisible="{Binding ShowNewInstanceButton}"
-                                    Command="{Binding NewInstanceCommand}"
-                                    Content="新建实例"/>
                             <Button Classes="overlay"
                                     IsVisible="{Binding ShowCancelDownload}"
                                     Command="{Binding CancelDownloadCommand}"

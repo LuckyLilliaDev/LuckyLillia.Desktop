@@ -2,7 +2,6 @@ using LuckyLilliaDesktop.Models;
 using LuckyLilliaDesktop.Utils;
 using Microsoft.Extensions.Logging;
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -15,11 +14,14 @@ using System.Threading.Tasks;
 namespace LuckyLilliaDesktop.Services;
 
 /// <summary>
-/// LLBot 实例进程管理: 每个实例一个 Node 进程. 优雅停止 = 向它的控制台发 Ctrl+C (LLBot 处理 SIGINT 后自己退出),
-/// 超时再进程树兜底; Windows Job Object 兜底 Desktop 崩溃; --parent-pid 让 LLBot 在 Desktop 消失时自己退出.
+/// LLBot 进程管理: Desktop 只拉起一个 llbot.js 进程 (多实例由其内部的 llbot-manager.js 统一管理).
+/// 优雅停止 = 向它的控制台发 Ctrl+C (管理器收到 SIGINT 后通过 IPC 在 25 秒内停掉所有实例并退出),
+/// 超时 (35 秒) 再进程树兜底; Windows Job Object 兜底 Desktop 崩溃; --parent-pid 让 LLBot 在 Desktop 消失时自己退出.
 /// </summary>
 public partial class ProcessManager : IProcessManager, IDisposable
 {
+    public const string LogSourceName = "LLBot";
+
     private sealed class Entry
     {
         public required Process Process { get; init; }
@@ -30,15 +32,16 @@ public partial class ProcessManager : IProcessManager, IDisposable
 
     private readonly ILogger<ProcessManager> _logger;
     private readonly ILogCollector _logCollector;
-    private readonly Dictionary<string, Entry> _entries = new();
-    private readonly object _entriesLock = new();
-    // 启动 / 停止串行化, 端口分配和状态变化才不会交错
+    private readonly object _entryLock = new();
+    private Entry? _entry;
+    private int? _lastExitCode;
+    // 启动 / 停止串行化, 状态变化才不会交错
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
 
     // Job Object 句柄，用于自动清理子进程
     private static IntPtr _jobHandle = IntPtr.Zero;
 
-    public event EventHandler<InstanceStatusChangedEventArgs>? StatusChanged;
+    public event EventHandler<ProcessStatusChangedEventArgs>? StatusChanged;
 
     public ProcessManager(ILogger<ProcessManager> logger, ILogCollector logCollector)
     {
@@ -51,51 +54,52 @@ public partial class ProcessManager : IProcessManager, IDisposable
         }
     }
 
-    public bool IsAnyProcessRunning
+    public bool IsRunning
     {
         get
         {
-            lock (_entriesLock) return _entries.Values.Any(e => e.Status is ProcessStatus.Running or ProcessStatus.Starting);
+            lock (_entryLock) return _entry is { Status: ProcessStatus.Running or ProcessStatus.Starting };
         }
     }
 
-    public IReadOnlyList<string> RunningInstances
+    public ProcessStatus Status
     {
         get
         {
-            lock (_entriesLock) return _entries.Where(p => p.Value.Status is ProcessStatus.Running or ProcessStatus.Starting).Select(p => p.Key).ToList();
+            lock (_entryLock) return _entry?.Status ?? ProcessStatus.Stopped;
         }
     }
 
-    public ProcessStatus GetStatus(string instance)
+    public int? Pid
     {
-        lock (_entriesLock) return _entries.TryGetValue(instance, out var entry) ? entry.Status : ProcessStatus.Stopped;
-    }
-
-    public int? GetPid(string instance)
-    {
-        lock (_entriesLock)
+        get
         {
-            if (!_entries.TryGetValue(instance, out var entry)) return null;
-            try { return entry.Process.HasExited ? null : entry.Process.Id; }
-            catch (InvalidOperationException) { return null; }
+            lock (_entryLock)
+            {
+                if (_entry == null) return null;
+                try { return _entry.Process.HasExited ? null : _entry.Process.Id; }
+                catch (InvalidOperationException) { return null; }
+            }
         }
     }
 
-    public int? GetExitCode(string instance)
+    public int? ExitCode
     {
-        lock (_entriesLock) return _entries.TryGetValue(instance, out var entry) ? entry.ExitCode : null;
+        get
+        {
+            lock (_entryLock) return _entry?.ExitCode ?? _lastExitCode;
+        }
     }
 
-    private Entry? GetEntry(string instance)
+    private Entry? GetEntry()
     {
-        lock (_entriesLock) return _entries.GetValueOrDefault(instance);
+        lock (_entryLock) return _entry;
     }
 
-    private void SetStatus(string instance, Entry entry, ProcessStatus status)
+    private void SetStatus(Entry entry, ProcessStatus status, bool requested = false)
     {
         entry.Status = status;
-        StatusChanged?.Invoke(this, new InstanceStatusChangedEventArgs(instance, status, entry.ExitCode));
+        StatusChanged?.Invoke(this, new ProcessStatusChangedEventArgs(status, entry.ExitCode, requested));
     }
 
     /// <summary>
@@ -164,32 +168,35 @@ public partial class ProcessManager : IProcessManager, IDisposable
 
     private static readonly string[] ProxyEnvNames = { "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy" };
 
-    public async Task<bool> StartInstanceAsync(string instance, LLBotLaunchOptions options)
+    public async Task<ProcessStartResult> StartAsync(LLBotLaunchOptions options)
     {
         await _lifecycle.WaitAsync();
-        try { return await StartInstanceCoreAsync(instance, options); }
+        try { return await StartCoreAsync(options); }
         finally { _lifecycle.Release(); }
     }
 
-    private async Task<bool> StartInstanceCoreAsync(string instance, LLBotLaunchOptions options)
+    // 失败一律带上原因返回: 调用方直接显示给用户, 不再只有一句 "启动失败，请查看日志"
+    private ProcessStartResult Fail(string message, Exception? ex = null)
     {
-        if (GetStatus(instance) is ProcessStatus.Running or ProcessStatus.Starting or ProcessStatus.Stopping)
+        if (ex != null) _logger.LogError(ex, "{Message}", message);
+        else _logger.LogError("{Message}", message);
+        return ProcessStartResult.Failed(message);
+    }
+
+    private async Task<ProcessStartResult> StartCoreAsync(LLBotLaunchOptions options)
+    {
+        var status = Status;
+        if (status is ProcessStatus.Running or ProcessStatus.Starting or ProcessStatus.Stopping)
         {
-            _logger.LogWarning("实例 {Instance} 已在运行中", instance);
-            return false;
+            var pid = Pid;
+            return Fail($"LLBot 已有进程 (PID {pid?.ToString() ?? "未知"}, 状态 {status})，没有再启动一个");
         }
 
         if (!File.Exists(options.NodePath))
-        {
-            _logger.LogError("Node.js 可执行文件不存在: {Path}", options.NodePath);
-            return false;
-        }
+            return Fail($"Node.js 可执行文件不存在: {Path.GetFullPath(options.NodePath)}");
 
         if (!File.Exists(options.ScriptPath))
-        {
-            _logger.LogError("LLBot 脚本不存在: {Path}", options.ScriptPath);
-            return false;
-        }
+            return Fail($"LLBot 脚本不存在: {Path.GetFullPath(options.ScriptPath)}");
 
         var workingDir = Path.GetDirectoryName(Path.GetFullPath(options.ScriptPath))!;
         var scriptFileName = Path.GetFileName(options.ScriptPath);
@@ -201,7 +208,7 @@ public partial class ProcessManager : IProcessManager, IDisposable
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            // 每个实例一个隐藏控制台, 停止时往这个控制台发 Ctrl+C
+            // 独立的隐藏控制台, 停止时往这个控制台发 Ctrl+C
             CreateNoWindow = true,
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
@@ -219,12 +226,10 @@ public partial class ProcessManager : IProcessManager, IDisposable
         startInfo.ArgumentList.Add("--disable-warning=ExperimentalWarning");
         startInfo.ArgumentList.Add(scriptFileName);
 
-        // 传给 LLBot 脚本的参数 (都放在 -- 之后). 登录方式 / 协议 / QQ 路径不由 Desktop 指定, 全在 WebUI 里配.
+        // 传给 LLBot 脚本的参数 (都放在 -- 之后). 不再传 --instance, 多实例由 llbot-manager.js 统一管理.
         startInfo.ArgumentList.Add("--");
-        // Desktop 没了 LLBot 自己退出 (hostLifecycle.ts)
+        // Desktop 没了 LLBot 自己退出 (llbot.js / llbot-manager.js)
         startInfo.ArgumentList.Add($"--parent-pid={Environment.ProcessId}");
-        startInfo.ArgumentList.Add("--instance");
-        startInfo.ArgumentList.Add(instance);
         startInfo.ArgumentList.Add("--webui-port");
         startInfo.ArgumentList.Add(options.WebUiPort.ToString());
         if (options.UseChinaCdn)
@@ -237,10 +242,10 @@ public partial class ProcessManager : IProcessManager, IDisposable
             startInfo.ArgumentList.Add(DevMode.Argument);
         }
 
-        _logger.LogInformation("启动实例 {Instance}: {Node} {Args}", instance, options.NodePath, string.Join(" ", startInfo.ArgumentList));
+        _logger.LogInformation("启动 LLBot: {Node} {Args}", options.NodePath, string.Join(" ", startInfo.ArgumentList));
 
         // 子进程继承本进程的 "忽略 Ctrl+C" 标志 (SetConsoleCtrlHandler(NULL, TRUE); 有些终端 / 启动器会给拉起的程序带上).
-        // 带着它的 LLBot 收不到 Ctrl+C, 停实例只能等超时强杀, 所以起进程前先清掉.
+        // 带着它的 LLBot 收不到 Ctrl+C, 停止只能等超时强杀, 所以起进程前先清掉.
         if (PlatformHelper.IsWindows) SetConsoleCtrlHandler(IntPtr.Zero, false);
 
         Process? process;
@@ -250,41 +255,46 @@ public partial class ProcessManager : IProcessManager, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "启动实例 {Instance} 失败", instance);
-            return false;
+            return Fail($"启动 LLBot 进程失败: {ex.Message} (Node: {startInfo.FileName}, 工作目录: {workingDir})", ex);
         }
 
         if (process == null)
-        {
-            _logger.LogError("无法启动实例 {Instance} 的进程", instance);
-            return false;
-        }
+            return Fail($"启动 LLBot 进程失败: 系统没有返回进程 (Node: {startInfo.FileName})");
 
         var entry = new Entry { Process = process, Status = ProcessStatus.Starting };
-        lock (_entriesLock) _entries[instance] = entry;
-        SetStatus(instance, entry, ProcessStatus.Starting);
+        lock (_entryLock)
+        {
+            _entry = entry;
+            _lastExitCode = null;
+        }
+        SetStatus(entry, ProcessStatus.Starting);
 
-        // 等一小段时间确认没有立即退出 (参数错 / 实例被别的进程锁着)
+        // 等一小段时间确认没有立即退出 (参数错 / 已有管理进程占用数据目录)
         await Task.Delay(500);
         if (process.HasExited)
         {
             entry.ExitCode = process.ExitCode;
-            _logger.LogError("实例 {Instance} 立即退出，退出码: {ExitCode}", instance, process.ExitCode);
-            await LogExitedProcessOutputAsync(process, instance);
-            SetStatus(instance, entry, ProcessStatus.Error);
+            var tail = await LogExitedProcessOutputAsync(process);
+            lock (_entryLock)
+            {
+                _lastExitCode = entry.ExitCode;
+                if (ReferenceEquals(_entry, entry)) _entry = null;
+            }
+            SetStatus(entry, ProcessStatus.Error);
             process.Dispose();
-            lock (_entriesLock) _entries.Remove(instance);
-            return false;
+            var reason = $"LLBot 启动后立即退出 (退出码 {entry.ExitCode})";
+            return Fail(string.IsNullOrEmpty(tail) ? $"{reason}，没有任何输出" : $"{reason}:\n{tail}");
         }
 
-        _logCollector.AttachProcess(instance, process);
-        SetStatus(instance, entry, ProcessStatus.Running);
-        _ = MonitorProcessAsync(instance, entry);
-        _logger.LogInformation("实例 {Instance} 已启动, PID: {Pid}", instance, process.Id);
-        return true;
+        _logCollector.AttachProcess(LogSourceName, process);
+        SetStatus(entry, ProcessStatus.Running);
+        _ = MonitorProcessAsync(entry);
+        _logger.LogInformation("LLBot 已启动, PID: {Pid}", process.Id);
+        return ProcessStartResult.Ok;
     }
 
-    private async Task LogExitedProcessOutputAsync(Process process, string instance)
+    /// <summary>把立即退出的进程的全部输出记进日志, 返回最后几行 (优先 stderr, 去掉 ANSI 颜色) 给界面显示.</summary>
+    private async Task<string> LogExitedProcessOutputAsync(Process process)
     {
         try
         {
@@ -296,17 +306,27 @@ public partial class ProcessManager : IProcessManager, IDisposable
             var stderr = stderrTask.Result.Trim();
 
             if (!string.IsNullOrEmpty(stdout))
-                _logger.LogError("[{Instance}] stdout: {Output}", instance, stdout);
+                _logger.LogError("[{Source}] stdout: {Output}", LogSourceName, stdout);
             if (!string.IsNullOrEmpty(stderr))
-                _logger.LogError("[{Instance}] stderr: {Error}", instance, stderr);
+                _logger.LogError("[{Source}] stderr: {Error}", LogSourceName, stderr);
+            return Tail(string.IsNullOrEmpty(stderr) ? stdout : stderr, 5);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "读取实例 {Instance} 退出输出失败", instance);
+            _logger.LogWarning(ex, "读取 LLBot 退出输出失败");
+            return string.Empty;
         }
     }
 
-    private async Task MonitorProcessAsync(string instance, Entry entry)
+    private static readonly Regex AnsiEscapeRegex = new(@"\x1B\[[0-9;]*[A-Za-z]");
+
+    private static string Tail(string text, int lines)
+    {
+        var all = AnsiEscapeRegex.Replace(text, "").Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l.Trim().Length > 0).ToArray();
+        return string.Join("\n", all.Skip(Math.Max(0, all.Length - lines)));
+    }
+
+    private async Task MonitorProcessAsync(Entry entry)
     {
         try
         {
@@ -318,37 +338,38 @@ public partial class ProcessManager : IProcessManager, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "监控实例 {Instance} 进程时出错", instance);
+            _logger.LogError(ex, "监控 LLBot 进程时出错");
             return;
         }
 
-        // 主动停止的路径由 StopInstanceCoreAsync 收尾, 这里只处理自己退出的
+        // 主动停止的路径由 StopCoreAsync 收尾, 这里只处理自己退出的
         if (entry.Status == ProcessStatus.Stopping) return;
         try { entry.ExitCode = entry.Process.ExitCode; } catch { }
-        _logger.LogWarning("实例 {Instance} 进程已退出, ExitCode: {ExitCode}", instance, entry.ExitCode);
-        _logCollector.DetachProcess(instance);
-        lock (_entriesLock)
+        _logger.LogWarning("LLBot 进程已退出, ExitCode: {ExitCode}", entry.ExitCode);
+        _logCollector.DetachProcess(LogSourceName);
+        lock (_entryLock)
         {
-            if (ReferenceEquals(_entries.GetValueOrDefault(instance), entry)) _entries.Remove(instance);
+            _lastExitCode = entry.ExitCode;
+            if (ReferenceEquals(_entry, entry)) _entry = null;
         }
-        SetStatus(instance, entry, ProcessStatus.Stopped);
+        SetStatus(entry, ProcessStatus.Stopped);
         entry.Process.Dispose();
     }
 
-    public async Task StopInstanceAsync(string instance)
+    public async Task StopAsync()
     {
         await _lifecycle.WaitAsync();
-        try { await StopInstanceCoreAsync(instance); }
+        try { await StopCoreAsync(); }
         finally { _lifecycle.Release(); }
     }
 
-    private async Task StopInstanceCoreAsync(string instance)
+    private async Task StopCoreAsync()
     {
-        var entry = GetEntry(instance);
+        var entry = GetEntry();
         if (entry == null) return;
 
         entry.MonitorCts.Cancel();
-        SetStatus(instance, entry, ProcessStatus.Stopping);
+        SetStatus(entry, ProcessStatus.Stopping, requested: true);
 
         var process = entry.Process;
         try
@@ -360,13 +381,13 @@ public partial class ProcessManager : IProcessManager, IDisposable
                 {
                     try
                     {
-                        // LLBot 收到 SIGINT 后要收拾原生会话 (含它拉起的 QQ), 给足时间
+                        // 管理器收到 SIGINT 后会在 25 秒内逐一停止所有实例, 给足 35 秒余量
                         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(35));
                         await process.WaitForExitAsync(timeout.Token);
                     }
                     catch (OperationCanceledException)
                     {
-                        _logger.LogWarning("实例 {Instance} 没有在 35 秒内退出，强制清理其进程树", instance);
+                        _logger.LogWarning("LLBot 没有在 35 秒内退出，强制清理其进程树");
                     }
                 }
                 if (!process.HasExited) await KillProcessTreeAsync(pid);
@@ -375,30 +396,21 @@ public partial class ProcessManager : IProcessManager, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "停止实例 {Instance} 时出错", instance);
+            _logger.LogWarning(ex, "停止 LLBot 时出错");
         }
         finally
         {
             // 退出后再分离, 关停期间 LLBot 打的日志也要收
-            _logCollector.DetachProcess(instance);
-            lock (_entriesLock)
+            _logCollector.DetachProcess(LogSourceName);
+            lock (_entryLock)
             {
-                if (ReferenceEquals(_entries.GetValueOrDefault(instance), entry)) _entries.Remove(instance);
+                _lastExitCode = entry.ExitCode;
+                if (ReferenceEquals(_entry, entry)) _entry = null;
             }
-            SetStatus(instance, entry, ProcessStatus.Stopped);
+            SetStatus(entry, ProcessStatus.Stopped, requested: true);
             process.Dispose();
-            _logger.LogInformation("实例 {Instance} 已停止", instance);
+            _logger.LogInformation("LLBot 已停止");
         }
-    }
-
-    public async Task StopAllAsync()
-    {
-        var instances = RunningInstances;
-        if (instances.Count == 0) return;
-        _logger.LogInformation("停止所有实例: {Instances}", string.Join(", ", instances));
-        // 各实例互不相干, 并行停
-        await Task.WhenAll(instances.Select(StopInstanceAsync));
-        _logger.LogInformation("所有实例已停止");
     }
 
     // Windows: 附到子进程的隐藏控制台上发 Ctrl+C (Node 把它当 SIGINT). 自己先忽略 Ctrl+C, 否则这一下也会打到 Desktop.
@@ -515,23 +527,20 @@ public partial class ProcessManager : IProcessManager, IDisposable
     }
 
     /// <summary>
-    /// 快速强制终止所有实例（用于应用退出兜底）
+    /// 快速强制终止 LLBot 进程树（用于应用退出兜底）
     /// </summary>
-    public void ForceKillAll()
+    public void ForceKill()
     {
-        List<KeyValuePair<string, Entry>> entries;
-        lock (_entriesLock) entries = _entries.ToList();
-        foreach (var (instance, entry) in entries)
+        var entry = GetEntry();
+        if (entry == null) return;
+        try
         {
-            try
-            {
-                if (entry.Process.HasExited) continue;
-                var pid = entry.Process.Id;
-                _logger.LogInformation("强制终止实例 {Instance}, PID: {Pid}", instance, pid);
-                KillProcessTree(pid);
-            }
-            catch { }
+            if (entry.Process.HasExited) return;
+            var pid = entry.Process.Id;
+            _logger.LogInformation("强制终止 LLBot, PID: {Pid}", pid);
+            KillProcessTree(pid);
         }
+        catch { }
     }
 
     private static void KillProcessTree(int pid)
@@ -597,9 +606,8 @@ public partial class ProcessManager : IProcessManager, IDisposable
 
     public void Dispose()
     {
-        List<Entry> entries;
-        lock (_entriesLock) entries = _entries.Values.ToList();
-        foreach (var entry in entries)
+        var entry = GetEntry();
+        if (entry != null)
         {
             entry.MonitorCts.Cancel();
             entry.MonitorCts.Dispose();

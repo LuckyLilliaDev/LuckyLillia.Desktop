@@ -24,7 +24,6 @@ public class UpdateInfo
 public interface IUpdateChecker
 {
     Task<UpdateInfo> CheckAppUpdateAsync(string currentVersion, CancellationToken ct = default);
-    Task<UpdateInfo> CheckLLBotUpdateAsync(string currentVersion, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -47,15 +46,6 @@ public class UpdateChecker : IUpdateChecker
             Constants.NpmPackages.App,
             currentVersion,
             $"https://github.com/{Constants.GitHubRepos.App}/releases",
-            ct);
-    }
-
-    public async Task<UpdateInfo> CheckLLBotUpdateAsync(string currentVersion, CancellationToken ct = default)
-    {
-        return await CheckUpdateAsync(
-            Constants.NpmPackages.LLBot,
-            currentVersion,
-            $"https://github.com/{Constants.GitHubRepos.LLBot}/releases",
             ct);
     }
 

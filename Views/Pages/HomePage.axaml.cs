@@ -1,7 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
-using Avalonia.Threading;
 using LuckyLilliaDesktop.Utils.WebView2;
 using LuckyLilliaDesktop.ViewModels;
 using System.Threading.Tasks;
@@ -15,6 +14,8 @@ public partial class HomePage : UserControl
         InitializeComponent();
         WebView.NavigationCompleted += (_, e) => (DataContext as HomeViewModel)?.ReportNavigation(e.IsSuccess, e.WebErrorStatus);
         WebView.InitializationFailed += (_, ex) => (DataContext as HomeViewModel)?.ReportWebViewFailure(ex);
+        // 打开统一 WebUI 前先放好登录 cookie, 免得桌面端内嵌视图还要输密码
+        WebView.CookieProvider = url => (DataContext as HomeViewModel)?.WebUiLoginCookie(url);
     }
 
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
@@ -44,16 +45,5 @@ public partial class HomePage : UserControl
     {
         (DataContext as HomeViewModel)?.ClearPageError();
         WebView.Reload();
-    }
-
-    // 下拉框末尾的 "新建实例" 不是实例: 直接把控件拨回当前实例 (绕开两向绑定不推相同值的问题), 再走新建流程
-    private void InstancePicker_SelectionChanged(object? sender, SelectionChangedEventArgs e)
-    {
-        if (InstancePicker.SelectedItem is not NewInstanceEntry || DataContext is not HomeViewModel vm) return;
-        Dispatcher.UIThread.Post(() =>
-        {
-            InstancePicker.SelectedItem = vm.SelectedInstance;
-            vm.RequestNewInstance();
-        });
     }
 }

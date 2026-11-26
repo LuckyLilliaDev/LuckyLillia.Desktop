@@ -11,7 +11,7 @@
 |------|----------|--------|
 | 运行时路径 | `node_path` `llbot_path` | 设置页 `SettingsViewModel` (保存按钮, `SetSettingAsync` 单 key); `HomeViewModel.EnsureRuntimeAsync` 下载后也会改 (read-modify-write 整体存回) |
 | LLBot 运行环境 | `http_proxy` `startup_command` | 设置页 (保存按钮, 单 key) |
-| 随桌面端启动的实例 | `auto_start_instances` (字符串数组, 默认 `["default"]`) | 控制面板实例菜单 `HomeViewModel.SaveAutoStartAsync` (`SetSettingAsync` 单 key, 删实例时也会改) |
+| 备用 WebUI 端口 | `webui_fallback_port` (整数或 `null`) | 网关配置端口被占时 `HomeViewModel.RememberFallbackPortAsync` (`SetSettingAsync` 单 key) |
 | 桌面端开关 | `minimize_to_tray_on_start` `close_to_tray` `startup_command_enabled` `server_region` | 设置页 (改动即时 `SetSettingAsync` 单 key) |
 | 关闭窗口"记住选择" | `close_to_tray` | `MainWindow.OnWindowClosing` 关闭对话框 (`SetSettingAsync` 单 key) |
 | 主题 | `theme_mode` | `MainWindowViewModel` (标题栏按钮和设置页下拉框都经它写, `SetSettingAsync` 单 key) |
@@ -45,7 +45,8 @@
 (`dev`, `window_*`) 不会被它冲掉.
 
 `AppConfig` 里已删除的旧字段 (`qq_path` `pmhq_*` `headless` `protocol` `auto_login_qq` `auto_start_bot`
-`auto_start_frameworks` `log_*` `llbot_instance` 等) 反序列化时被忽略, 下一次整体存回后从文件里消失, 这是预期的.
+`auto_start_frameworks` `log_*` `llbot_instance` `auto_start_instances` `instance_ports` 等) 反序列化时被忽略;
+其中开发版的 `auto_start_instances` 与 `instance_ports["default"]` 会在首次运行时一次性迁出并从 `app_settings.json` 移除.
 
 ## 三态字段 close_to_tray
 

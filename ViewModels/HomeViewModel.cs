@@ -7,18 +7,17 @@ using Microsoft.Extensions.Logging;
 using ReactiveUI;
 using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reactive;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace LuckyLilliaDesktop.ViewModels;
 
-/// <summary>运行环境 (Node.js / LLBot) 的准备阶段, 所有实例共用.</summary>
+/// <summary>运行环境 (Node.js / LLBot) 的准备阶段.</summary>
 public enum RuntimePhase
 {
     Idle,
@@ -28,15 +27,24 @@ public enum RuntimePhase
     Failed
 }
 
+/// <summary>LLBot 统一管理进程的运行阶段.</summary>
+public enum ServicePhase
+{
+    Stopped,
+    Starting,
+    Running,
+    Stopping,
+    Failed
+}
+
 /// <summary>
-/// 控制面板: 管理 LLBot 实例 (data/instances/&lt;实例名&gt;, 每个实例一个进程), 把选中实例的 WebUI 嵌在 WebView2 里.
-/// LLBot 自己的配置 / 登录 / WebUI 密码全在 WebUI 里处理; Desktop 做运行时准备 -> 分配端口并启动进程 -> 等 WebUI 就绪 -> 导航.
-/// 见 doc/llbot-webui.md.
+/// 控制面板: 准备运行时 -> 拉起唯一的 LLBot 管理进程 (llbot.js -> llbot-manager.js) -> 等统一网关 WebUI 就绪 -> 嵌进 WebView2.
+/// 多实例增删改启停、登录方式、协议与 WebUI 密码全在 LLBot 统一 WebUI 里处理. 见 doc/llbot-webui.md.
 /// </summary>
 public class HomeViewModel : ViewModelBase
 {
     private static readonly TimeSpan WebUiReadyTimeout = TimeSpan.FromSeconds(90);
-    // 启动门槛: LLBot 主版本必须 >= 8 (实例配置 / WebUI 登录页都是 8 才有的)
+    // 启动门槛: LLBot 主版本必须 >= 8
     private const int MinMajorVersion = 8;
 
     private readonly IProcessManager _processManager;
@@ -45,46 +53,23 @@ public class HomeViewModel : ViewModelBase
     private readonly IDownloadService _downloadService;
     private readonly IUpdateChecker _updateChecker;
     private readonly IUpdateStateService _updateStateService;
+    private readonly ILogCollector _logCollector;
     private readonly ILogger<HomeViewModel> _logger;
     private readonly SemaphoreSlim _runtimeGate = new(1, 1);
-    // 实例的启动 / 停止串行化: 端口分配要看别的实例占了哪些
-    private readonly SemaphoreSlim _instanceGate = new(1, 1);
+    private readonly SemaphoreSlim _serviceGate = new(1, 1);
     private CancellationTokenSource? _downloadCts;
     private AppConfig _config = AppConfig.Default;
     private bool _startupCommandDone;
-    private List<string> _resumeAfterUpdate = [];
+    private bool _resumeAfterUpdate;
+    private bool _legacyMigrated;
 
     public Func<string, string, Task<bool>>? ConfirmDialog { get; set; }
     public Func<string, string, Task>? ShowAlertDialog { get; set; }
     public Func<string, Func<Task>, Task>? ShowLoadingDialog { get; set; }
-    /// <summary>(标题, 说明, 水印) -> 输入的文本, 取消为 null</summary>
-    public Func<string, string, string, Task<string?>>? ShowTextInputDialog { get; set; }
     public Action? NavigateToAbout { get; set; }
     public Func<Task>? OnDownloadCompleted { get; set; }
 
-    // ---- 实例 ----
-
-    public ObservableCollection<InstanceViewModel> Instances { get; } = new();
-
-    private InstanceViewModel? _selectedInstance;
-    public InstanceViewModel? SelectedInstance
-    {
-        get => _selectedInstance;
-        set
-        {
-            if (ReferenceEquals(_selectedInstance, value)) return;
-            this.RaiseAndSetIfChanged(ref _selectedInstance, value);
-            this.RaisePropertyChanged(nameof(PickerSelection));
-            TerminalLog.Instance = value?.Name;
-            PageError = string.Empty;
-            RaiseDerived();
-        }
-    }
-
-    // 工具条下拉框的内容: 所有实例 + 末尾的 "新建实例" 项
-    public ObservableCollection<object> PickerItems { get; } = new();
-
-    /// <summary>选中实例的终端输出 (stdout / stderr), 工具条 "终端日志" 切换后顶替 WebView 显示.</summary>
+    /// <summary>终端日志: LLBot 管理进程及其子实例的输出加 Desktop 自己的日志, 工具条点 "终端日志" 后顶替 WebView 显示.</summary>
     public LogViewModel TerminalLog { get; }
 
     private bool _showTerminal;
@@ -97,35 +82,6 @@ public class HomeViewModel : ViewModelBase
             this.RaiseAndSetIfChanged(ref _showTerminal, value);
             RaiseDerived();
             if (value) TerminalLog.ScrollToBottom();
-        }
-    }
-
-    // 下拉框把 null (项被移除时) 和 "新建实例" 项推过来都不当选择; "新建实例" 由 HomePage 把下拉框拨回当前实例后调 RequestNewInstance
-    public object? PickerSelection
-    {
-        get => SelectedInstance;
-        set
-        {
-            if (value is InstanceViewModel vm) SelectedInstance = vm;
-        }
-    }
-
-    public void RequestNewInstance() => _ = NewInstanceAsync();
-
-    // 不整表重建: 清空会让下拉框丢掉当前选中项, 而两向绑定把同一个值再推回去时不会生效, 框就空了
-    private void SyncPickerItems()
-    {
-        var desired = new List<object>(Instances.Count + 1);
-        desired.AddRange(Instances);
-        desired.Add(NewInstanceEntry.Instance);
-        for (var i = PickerItems.Count - 1; i >= 0; i--)
-            if (!desired.Contains(PickerItems[i])) PickerItems.RemoveAt(i);
-        for (var i = 0; i < desired.Count; i++)
-        {
-            var current = PickerItems.IndexOf(desired[i]);
-            if (current == i) continue;
-            if (current >= 0) PickerItems.Move(current, i);
-            else PickerItems.Insert(i, desired[i]);
         }
     }
 
@@ -154,6 +110,50 @@ public class HomeViewModel : ViewModelBase
         }
     }
 
+    // ---- LLBot 进程状态 ----
+
+    private ServicePhase _servicePhase = ServicePhase.Stopped;
+    public ServicePhase ServicePhase
+    {
+        get => _servicePhase;
+        private set
+        {
+            if (_servicePhase == value) return;
+            this.RaiseAndSetIfChanged(ref _servicePhase, value);
+            // 页面关闭只对这一次运行有效, 停了再启动时 WebUI 照常显示
+            if (value != ServicePhase.Running) _isWebUiClosed = false;
+            RaiseDerived();
+        }
+    }
+
+    private bool _isWebUiClosed;
+    public bool IsWebUiClosed
+    {
+        get => _isWebUiClosed;
+        private set
+        {
+            if (_isWebUiClosed == value) return;
+            this.RaiseAndSetIfChanged(ref _isWebUiClosed, value);
+            RaiseDerived();
+        }
+    }
+
+    private int? _port;
+    public int? Port
+    {
+        get => _port;
+        private set
+        {
+            if (_port == value) return;
+            this.RaiseAndSetIfChanged(ref _port, value);
+            RaiseDerived();
+        }
+    }
+
+    private string? _url;
+    private int? _exitCode;
+    private string _serviceMessage = string.Empty;
+
     // 内嵌视图是否可用: 非 Windows / 没装运行时 / 初始化失败 都为 false, 页面改成"在浏览器打开"
     private bool _webViewSupported = WebView2Runtime.IsAvailable;
     public bool WebViewSupported
@@ -181,43 +181,52 @@ public class HomeViewModel : ViewModelBase
 
     public bool HasPageError => !string.IsNullOrEmpty(PageError);
 
-    // ---- 派生状态 (选中实例 + 运行环境) ----
+    // ---- 派生状态 ----
 
-    public bool HasInstances => Instances.Count > 0;
     public bool IsRuntimeReady => RuntimePhase == RuntimePhase.Ready;
-    public bool IsSelectedRunning => SelectedInstance?.Phase == InstancePhase.Running;
-    public bool ShowTerminalView => ShowTerminal && SelectedInstance != null;
-    public bool CanShowTerminal => SelectedInstance != null;
-    public bool IsWebUiClosed => SelectedInstance?.IsWebUiClosed == true;
-    public bool ShowWebView => IsRuntimeReady && IsSelectedRunning && WebViewSupported && !IsWebUiClosed && !ShowTerminalView;
-    // 工具条的 "关闭页面 / 打开页面": 只在内嵌 WebView 能显示当前实例时出现
-    public bool CanToggleWebUi => IsRuntimeReady && IsSelectedRunning && WebViewSupported;
+    public bool IsServiceRunning => ServicePhase == ServicePhase.Running;
+    public bool HasPort => Port != null;
+    public string PortText => Port is int p ? $":{p}" : string.Empty;
+    public ProcessStatus BotStatus => ServicePhase switch
+    {
+        ServicePhase.Running => ProcessStatus.Running,
+        ServicePhase.Starting => ProcessStatus.Starting,
+        ServicePhase.Stopping => ProcessStatus.Stopping,
+        ServicePhase.Failed => ProcessStatus.Error,
+        _ => RuntimePhase switch
+        {
+            RuntimePhase.Preparing or RuntimePhase.Downloading => ProcessStatus.Starting,
+            RuntimePhase.Failed => ProcessStatus.Error,
+            _ => ProcessStatus.Stopped
+        }
+    };
+    public bool ShowTerminalView => ShowTerminal;
+    public bool CanShowTerminal => true;
+    public bool ShowWebView => IsRuntimeReady && IsServiceRunning && WebViewSupported && !IsWebUiClosed && !ShowTerminalView;
+    public bool CanToggleWebUi => IsRuntimeReady && IsServiceRunning && WebViewSupported;
     public string ToggleWebUiText => IsWebUiClosed ? "打开页面" : "关闭页面";
     public bool ShowReopenWebUi => CanToggleWebUi && IsWebUiClosed;
     public bool ShowOverlay => !ShowWebView && !ShowTerminalView;
-    public bool ShowSpinner => RuntimePhase == RuntimePhase.Preparing || SelectedInstance?.IsBusy == true;
+    public bool ShowSpinner => RuntimePhase == RuntimePhase.Preparing || ServicePhase is ServicePhase.Starting or ServicePhase.Stopping;
     public bool ShowProgress => RuntimePhase == RuntimePhase.Downloading;
     public bool ShowCancelDownload => RuntimePhase == RuntimePhase.Downloading;
     public bool ShowStartButton => RuntimePhase == RuntimePhase.Failed
-        || (IsRuntimeReady && SelectedInstance is { Phase: InstancePhase.Stopped or InstancePhase.Failed });
-    public string StartButtonText => RuntimePhase == RuntimePhase.Failed || SelectedInstance?.Phase == InstancePhase.Failed ? "重试" : "启动实例";
-    public bool ShowNewInstanceButton => IsRuntimeReady && SelectedInstance == null;
-    public bool ShowOpenInBrowser => IsSelectedRunning && !WebViewSupported;
-    public bool ShowInstallWebView2 => IsSelectedRunning && !WebViewSupported && OperatingSystem.IsWindows() && string.IsNullOrEmpty(_webViewFailure);
-    public bool ShowLogsButton => RuntimePhase == RuntimePhase.Failed || SelectedInstance is { Phase: InstancePhase.Stopped or InstancePhase.Failed };
+        || (IsRuntimeReady && ServicePhase is ServicePhase.Stopped or ServicePhase.Failed);
+    public string StartButtonText => RuntimePhase == RuntimePhase.Failed || ServicePhase == ServicePhase.Failed ? "重试" : "启动";
+    public bool ShowOpenInBrowser => IsServiceRunning && !WebViewSupported;
+    public bool ShowInstallWebView2 => IsServiceRunning && !WebViewSupported && OperatingSystem.IsWindows() && string.IsNullOrEmpty(_webViewFailure);
+    public bool ShowLogsButton => RuntimePhase == RuntimePhase.Failed || ServicePhase is ServicePhase.Stopped or ServicePhase.Failed;
     public bool ShowErrorIcon => RuntimePhase == RuntimePhase.Failed
-        || SelectedInstance?.Phase == InstancePhase.Failed
-        || SelectedInstance is { Phase: InstancePhase.Stopped, ExitCode: not (null or 0) };
+        || ServicePhase == ServicePhase.Failed
+        || (ServicePhase == ServicePhase.Stopped && _exitCode is not (null or 0));
     public bool CanStartStop => RuntimePhase == RuntimePhase.Failed
-        || (IsRuntimeReady && SelectedInstance is { Phase: InstancePhase.Running or InstancePhase.Stopped or InstancePhase.Failed });
-    public string StartStopText => IsSelectedRunning ? "停止" : "启动";
-    public bool CanRestart => IsSelectedRunning;
+        || (IsRuntimeReady && ServicePhase is ServicePhase.Running or ServicePhase.Stopped or ServicePhase.Failed);
+    public string StartStopText => IsServiceRunning ? "停止" : "启动";
+    public bool CanRestart => IsServiceRunning;
     public bool CanRefresh => ShowWebView;
-    public bool CanDelete => IsRuntimeReady && SelectedInstance is { Phase: InstancePhase.Stopped or InstancePhase.Failed };
-    public bool CanToggleAutoStart => SelectedInstance != null;
-    public bool SelectedIsAutoStart => SelectedInstance?.IsAutoStart ?? false;
-    public bool HasWebUiUrl => IsSelectedRunning && !string.IsNullOrEmpty(SelectedInstance?.Url);
-    public string? WebUiUrl => HasWebUiUrl ? SelectedInstance!.Url : null;
+    public bool HasWebUiUrl => IsServiceRunning && !string.IsNullOrEmpty(_url);
+    public string? WebUiUrl => HasWebUiUrl ? _url : null;
+
     public string OverlayTitle
     {
         get
@@ -229,18 +238,16 @@ public class HomeViewModel : ViewModelBase
                 case RuntimePhase.Downloading: return $"正在下载 {DownloadingItem}";
                 case RuntimePhase.Failed: return "运行环境准备失败";
             }
-            var vm = SelectedInstance;
-            if (vm == null) return "还没有实例";
-            return vm.Phase switch
+            return ServicePhase switch
             {
-                InstancePhase.Starting => $"正在启动实例 {vm.Name}",
-                InstancePhase.Stopping => $"正在停止实例 {vm.Name}",
-                InstancePhase.Failed => $"实例 {vm.Name} 启动失败",
-                InstancePhase.Running when vm.IsWebUiClosed && WebViewSupported => "页面已关闭",
-                InstancePhase.Running when !string.IsNullOrEmpty(_webViewFailure) => "内嵌 WebView 初始化失败",
-                InstancePhase.Running when OperatingSystem.IsWindows() => "未安装 WebView2 运行时",
-                InstancePhase.Running => "当前系统不支持内嵌 WebView",
-                _ => $"实例 {vm.Name} 未运行"
+                ServicePhase.Starting => "正在启动 LLBot",
+                ServicePhase.Stopping => "正在停止 LLBot",
+                ServicePhase.Failed => "LLBot 启动失败",
+                ServicePhase.Running when IsWebUiClosed && WebViewSupported => "页面已关闭",
+                ServicePhase.Running when !string.IsNullOrEmpty(_webViewFailure) => "内嵌 WebView 初始化失败",
+                ServicePhase.Running when OperatingSystem.IsWindows() => "未安装 WebView2 运行时",
+                ServicePhase.Running => "当前系统不支持内嵌 WebView",
+                _ => "LLBot 未运行"
             };
         }
     }
@@ -255,16 +262,14 @@ public class HomeViewModel : ViewModelBase
                 case RuntimePhase.Downloading: return string.Empty;
                 case RuntimePhase.Failed: return RuntimeMessage;
             }
-            var vm = SelectedInstance;
-            if (vm == null) return "每个实例是一套独立的 LLBot 配置、插件和 WebUI，可以同时运行多个。点击「新建实例」开始。";
-            return vm.Phase switch
+            return ServicePhase switch
             {
-                InstancePhase.Starting => vm.Port is int port ? $"等待 WebUI 就绪 (端口 {port})" : string.Empty,
-                InstancePhase.Running when vm.IsWebUiClosed && WebViewSupported => $"实例 {vm.Name} 仍在后台运行，只是关掉了页面显示。",
-                InstancePhase.Running => string.IsNullOrEmpty(_webViewFailure)
-                    ? $"可以先在系统浏览器中打开 WebUI: {vm.Url}"
-                    : $"{_webViewFailure}\n可以先在系统浏览器中打开 WebUI: {vm.Url}",
-                _ => vm.Message
+                ServicePhase.Starting => Port is int port ? $"等待 WebUI 就绪 (端口 {port})" : string.Empty,
+                ServicePhase.Running when IsWebUiClosed && WebViewSupported => "LLBot 仍在后台运行，只是关掉了页面显示。",
+                ServicePhase.Running => string.IsNullOrEmpty(_webViewFailure)
+                    ? $"可以先在系统浏览器中打开 WebUI: {_url}"
+                    : $"{_webViewFailure}\n可以先在系统浏览器中打开 WebUI: {_url}",
+                _ => _serviceMessage
             };
         }
     }
@@ -273,13 +278,12 @@ public class HomeViewModel : ViewModelBase
 
     private static readonly string[] DerivedProperties =
     [
-        nameof(HasInstances), nameof(IsRuntimeReady), nameof(IsSelectedRunning), nameof(ShowWebView), nameof(ShowOverlay),
-        nameof(ShowTerminalView), nameof(CanShowTerminal),
+        nameof(IsRuntimeReady), nameof(IsServiceRunning), nameof(HasPort), nameof(PortText), nameof(BotStatus),
+        nameof(ShowWebView), nameof(ShowOverlay), nameof(ShowTerminalView), nameof(CanShowTerminal),
         nameof(ShowSpinner), nameof(ShowProgress), nameof(ShowCancelDownload), nameof(ShowStartButton), nameof(StartButtonText),
-        nameof(ShowNewInstanceButton), nameof(ShowOpenInBrowser), nameof(ShowInstallWebView2), nameof(ShowLogsButton),
-        nameof(ShowErrorIcon), nameof(CanStartStop), nameof(StartStopText), nameof(CanRestart), nameof(CanRefresh),
-        nameof(CanDelete), nameof(CanToggleAutoStart), nameof(SelectedIsAutoStart), nameof(HasWebUiUrl), nameof(WebUiUrl),
-        nameof(OverlayTitle), nameof(OverlayMessage), nameof(HasOverlayMessage),
+        nameof(ShowOpenInBrowser), nameof(ShowInstallWebView2), nameof(ShowLogsButton), nameof(ShowErrorIcon),
+        nameof(CanStartStop), nameof(StartStopText), nameof(CanRestart), nameof(CanRefresh),
+        nameof(HasWebUiUrl), nameof(WebUiUrl), nameof(OverlayTitle), nameof(OverlayMessage), nameof(HasOverlayMessage),
         nameof(IsWebUiClosed), nameof(CanToggleWebUi), nameof(ToggleWebUiText), nameof(ShowReopenWebUi)
     ];
 
@@ -335,15 +339,12 @@ public class HomeViewModel : ViewModelBase
 
     public ReactiveCommand<Unit, Unit> StartStopCommand { get; }
     public ReactiveCommand<Unit, Unit> RestartCommand { get; }
-    public ReactiveCommand<Unit, Unit> NewInstanceCommand { get; }
-    public ReactiveCommand<Unit, Unit> DeleteInstanceCommand { get; }
-    public ReactiveCommand<Unit, Unit> ToggleAutoStartCommand { get; }
-    public ReactiveCommand<Unit, Unit> RefreshInstancesCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenInBrowserCommand { get; }
     public ReactiveCommand<Unit, Unit> InstallWebView2Command { get; }
     public ReactiveCommand<Unit, Unit> CancelDownloadCommand { get; }
     public ReactiveCommand<Unit, Unit> UpdateCommand { get; }
     public ReactiveCommand<Unit, Unit> ViewLogsCommand { get; }
+    public ReactiveCommand<Unit, Unit> ShowHomeCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenLogsCommand { get; }
     public ReactiveCommand<Unit, Unit> ToggleWebUiCommand { get; }
     public ReactiveCommand<Unit, Unit> ReopenWebUiCommand { get; }
@@ -356,9 +357,11 @@ public class HomeViewModel : ViewModelBase
         IUpdateChecker updateChecker,
         IUpdateStateService updateStateService,
         LogViewModel terminalLog,
+        ILogCollector logCollector,
         ILogger<HomeViewModel> logger)
     {
         TerminalLog = terminalLog;
+        _logCollector = logCollector;
         _processManager = processManager;
         _configManager = configManager;
         _systemTimeChecker = systemTimeChecker;
@@ -371,37 +374,21 @@ public class HomeViewModel : ViewModelBase
         _updateStateService.StateChanged
             .ObserveOnUiThread()
             .Subscribe(OnUpdateStateChanged);
-        Instances.CollectionChanged += (_, _) =>
-        {
-            SyncPickerItems();
-            RaiseDerived();
-        };
-        SyncPickerItems();
 
         // 按钮启用状态由属性绑定控制, 不用 canExecute observable (ReactiveCommand 的 CanExecuteChanged 会跨线程触发)
         StartStopCommand = ReactiveCommand.Create(() =>
         {
             if (!CanStartStop) return;
             if (RuntimePhase == RuntimePhase.Failed) _ = RetryRuntimeAsync();
-            else if (SelectedInstance is { } vm) _ = vm.IsRunning ? StopInstanceAsync(vm) : StartInstanceAsync(vm);
+            else _ = IsServiceRunning ? StopAsync() : StartAsync();
         }, outputScheduler: AvaloniaUiScheduler.Instance);
         RestartCommand = ReactiveCommand.Create(() =>
         {
-            if (CanRestart && SelectedInstance is { } vm) _ = RestartInstanceAsync(vm);
+            if (CanRestart) _ = RestartAsync();
         }, outputScheduler: AvaloniaUiScheduler.Instance);
-        NewInstanceCommand = ReactiveCommand.Create(() => { _ = NewInstanceAsync(); }, outputScheduler: AvaloniaUiScheduler.Instance);
-        DeleteInstanceCommand = ReactiveCommand.Create(() =>
-        {
-            if (CanDelete && SelectedInstance is { } vm) _ = DeleteInstanceAsync(vm);
-        }, outputScheduler: AvaloniaUiScheduler.Instance);
-        ToggleAutoStartCommand = ReactiveCommand.Create(() =>
-        {
-            if (SelectedInstance is { } vm) _ = SetAutoStartAsync(vm, !vm.IsAutoStart);
-        }, outputScheduler: AvaloniaUiScheduler.Instance);
-        RefreshInstancesCommand = ReactiveCommand.Create(() => LoadInstances(), outputScheduler: AvaloniaUiScheduler.Instance);
         OpenInBrowserCommand = ReactiveCommand.Create(() =>
         {
-            if (HasWebUiUrl) OpenExternal(SelectedInstance!.Url!);
+            if (HasWebUiUrl) OpenExternal(_url!);
         }, outputScheduler: AvaloniaUiScheduler.Instance);
         InstallWebView2Command = ReactiveCommand.Create(() => OpenExternal(WebView2Runtime.InstallerUrl), outputScheduler: AvaloniaUiScheduler.Instance);
         CancelDownloadCommand = ReactiveCommand.Create(() =>
@@ -411,6 +398,7 @@ public class HomeViewModel : ViewModelBase
         }, outputScheduler: AvaloniaUiScheduler.Instance);
         UpdateCommand = ReactiveCommand.Create(() => NavigateToAbout?.Invoke(), outputScheduler: AvaloniaUiScheduler.Instance);
         ViewLogsCommand = ReactiveCommand.Create(() => { ShowTerminal = true; }, outputScheduler: AvaloniaUiScheduler.Instance);
+        ShowHomeCommand = ReactiveCommand.Create(() => { ShowTerminal = false; }, outputScheduler: AvaloniaUiScheduler.Instance);
         OpenLogsCommand = ReactiveCommand.Create(() => OpenExternal(Path.GetFullPath("logs")), outputScheduler: AvaloniaUiScheduler.Instance);
         ToggleWebUiCommand = ReactiveCommand.Create(() =>
         {
@@ -432,11 +420,10 @@ public class HomeViewModel : ViewModelBase
         try
         {
             _config = await _configManager.LoadConfigAsync();
-            LoadInstances();
             // 让主窗口先画出来
             await Task.Delay(300);
             if (!await EnsureRuntimeAsync()) return;
-            await StartAutoStartInstancesAsync();
+            await StartAsync();
         }
         catch (Exception ex)
         {
@@ -444,140 +431,122 @@ public class HomeViewModel : ViewModelBase
         }
     }
 
-    private async Task StartAutoStartInstancesAsync()
-    {
-        foreach (var vm in Instances.Where(i => i.IsAutoStart).ToList())
-        {
-            await StartInstanceAsync(vm);
-        }
-    }
-
     private async Task RetryRuntimeAsync()
     {
         RuntimePhase = RuntimePhase.Idle;
         if (!await EnsureRuntimeAsync()) return;
-        await StartAutoStartInstancesAsync();
+        await StartAsync();
     }
 
-    /// <summary>扫描 data/instances 重建实例列表, 保留已有实例对象的运行状态.</summary>
-    public void LoadInstances()
+    /// <summary>一次性把开发版 Desktop 存在 app_settings.json 里的多实例自启配置迁到 LLBot 的 data/manager.json.</summary>
+    private async Task MigrateLegacyDesktopMultiInstanceAsync(AppConfig config)
     {
-        var names = LLBotWebUi.ListInstances(_config.LLBotPath);
-        if (!names.Contains(LLBotWebUi.DefaultInstance)) names.Insert(0, LLBotWebUi.DefaultInstance);
-        // 正在跑的实例目录被外部删了也不能从列表里消失
-        foreach (var running in _processManager.RunningInstances)
-            if (!names.Contains(running)) names.Add(running);
+        if (_legacyMigrated) return;
+        _legacyMigrated = true;
 
-        var autoStart = new HashSet<string>(_config.AutoStartInstances, StringComparer.Ordinal);
-
-        // 就地增删改序, 已有的实例对象 (含运行状态和下拉框的选中项) 原样保留
-        for (var i = Instances.Count - 1; i >= 0; i--)
+        var legacyAutoStart = _configManager.GetStringListSetting("auto_start_instances");
+        if (legacyAutoStart != null)
         {
-            if (names.Contains(Instances[i].Name)) continue;
-            Instances[i].PropertyChanged -= OnInstancePropertyChanged;
-            Instances.RemoveAt(i);
-        }
-        for (var i = 0; i < names.Count; i++)
-        {
-            var current = -1;
-            for (var j = 0; j < Instances.Count; j++)
+            if (LLBotWebUi.MigrateAutoStartToManagerJson(config.LLBotPath, legacyAutoStart))
             {
-                if (Instances[j].Name != names[i]) continue;
-                current = j;
-                break;
+                _logger.LogInformation("已将开发版 auto_start_instances ({Instances}) 迁移到 data/manager.json",
+                    string.Join(", ", legacyAutoStart));
             }
-            if (current < 0)
-            {
-                var vm = new InstanceViewModel(names[i]);
-                vm.PropertyChanged += OnInstancePropertyChanged;
-                Instances.Insert(i, vm);
-            }
-            else if (current != i)
-            {
-                Instances.Move(current, i);
-            }
-            Instances[i].IsAutoStart = autoStart.Contains(names[i]);
+            await _configManager.RemoveSettingAsync("auto_start_instances");
         }
 
-        if (SelectedInstance == null || !Instances.Contains(SelectedInstance))
-            SelectedInstance = Instances.FirstOrDefault(i => i.IsAutoStart) ?? Instances.FirstOrDefault();
-        RaiseDerived();
-        _logger.LogInformation("实例列表: {Instances} (自动启动: {AutoStart})", string.Join(", ", names), string.Join(", ", autoStart));
+        var legacyDefaultPort = _configManager.GetIntDictionarySetting("instance_ports", LLBotWebUi.DefaultInstance);
+        if (legacyDefaultPort is > 0 and <= 65535 && config.WebUiFallbackPort == null)
+        {
+            config.WebUiFallbackPort = legacyDefaultPort;
+            await _configManager.SetSettingAsync("webui_fallback_port", legacyDefaultPort);
+        }
+        await _configManager.RemoveSettingAsync("instance_ports");
     }
 
-    private void OnInstancePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    public async Task StartAsync()
     {
-        if (ReferenceEquals(sender, SelectedInstance)) RaiseDerived();
-    }
-
-    public async Task StartInstanceAsync(InstanceViewModel vm)
-    {
-        if (vm.Phase is not (InstancePhase.Stopped or InstancePhase.Failed)) return;
+        if (ServicePhase is not (ServicePhase.Stopped or ServicePhase.Failed)) return;
         if (!await EnsureRuntimeAsync()) return;
 
         var config = _config;
         var gateHeld = false;
         try
         {
-            // 从分配端口到进程起来这一段串行, 同时启动的实例才看得见彼此占的端口; 等 WebUI 就绪不占锁
-            await _instanceGate.WaitAsync();
+            await _serviceGate.WaitAsync();
             gateHeld = true;
-            if (vm.Phase is not (InstancePhase.Stopped or InstancePhase.Failed)) return;
+            if (ServicePhase is not (ServicePhase.Stopped or ServicePhase.Failed)) return;
 
-            vm.Phase = InstancePhase.Starting;
-            vm.Message = string.Empty;
-            vm.ExitCode = null;
-            vm.Url = null;
-            vm.Port = null;
-            if (ReferenceEquals(vm, SelectedInstance)) PageError = string.Empty;
+            ServicePhase = ServicePhase.Starting;
+            _serviceMessage = string.Empty;
+            _exitCode = null;
+            _url = null;
+            Port = null;
+            PageError = string.Empty;
 
-            var endpoint = LLBotWebUi.ReadEndpoint(config.LLBotPath, vm.Name);
-            if (!endpoint.Enabled)
+            var endpoint = LLBotWebUi.ReadGatewayEndpoint(config.LLBotPath);
+
+            // 界面以为没在跑, 进程管理器里却还有 LLBot 进程 (状态不同步): 不起第二个, 直接接管它
+            if (_processManager.Status == ProcessStatus.Running && _processManager.Pid is int livePid)
             {
-                Fail(vm, $"WebUI 已在该实例的配置中关闭 ({LLBotWebUi.SettingsPath(config.LLBotPath, vm.Name)} 的 webui.enable)，请改回 true 后重试");
+                _logger.LogWarning("LLBot 进程 {Pid} 仍在运行, 直接接管", livePid);
+                _serviceGate.Release();
+                gateHeld = false;
+                var adopted = await WaitForWebUiAsync(endpoint.ConnectHost, config.WebUiFallbackPort ?? endpoint.Port);
+                if (ServicePhase != ServicePhase.Starting) return;
+                if (adopted == null)
+                {
+                    await StopQuietlyAsync();
+                    Fail($"LLBot 进程仍在运行，但等了 {WebUiReadyTimeout.TotalSeconds:0} 秒也没找到它的 WebUI，已停止该进程，请重试。检测结果: {_lastWebUiProbe}");
+                    return;
+                }
+                _url = adopted;
+                ServicePhase = ServicePhase.Running;
+                _logger.LogInformation("LLBot WebUI 已就绪: {Url}", adopted);
                 return;
             }
 
-            // 端口: 实例配置里的是首选, 被占 (别的实例 / 别的程序) 就往上顺延, 以 --webui-port 传给 LLBot
-            var used = Instances.Where(i => !ReferenceEquals(i, vm) && i.Port is int).Select(i => i.Port!.Value).ToHashSet();
-            var free = TcpPorts.FindFree(endpoint.Port, used);
+            // 端口: 网关配置里的是首选, 被占先回退到上次备用端口 (webui_fallback_port) 保持 origin/cookie 不变, 再不行顺延 / 系统分配
+            int? free = null;
+            if (TcpPorts.IsFree(endpoint.Port)) free = endpoint.Port;
+            else if (config.WebUiFallbackPort is int remembered && TcpPorts.IsFree(remembered)) free = remembered;
+            free ??= TcpPorts.FindFree(endpoint.Port);
             if (free == null)
             {
-                Fail(vm, $"从端口 {endpoint.Port} 起找不到空闲端口");
+                Fail($"从端口 {endpoint.Port} 起找不到空闲端口");
                 return;
             }
             var port = free.Value;
             if (port != endpoint.Port)
-                _logger.LogWarning("实例 {Instance}: 配置端口 {Configured} 被占用, 改用 {Port}", vm.Name, endpoint.Port, port);
-            vm.Port = port;
+                _logger.LogWarning("配置端口 {Configured} 被占用, 改用 {Port}", endpoint.Port, port);
+            Port = port;
 
-            var started = await _processManager.StartInstanceAsync(vm.Name,
+            var started = await _processManager.StartAsync(
                 new LLBotLaunchOptions(config.NodePath, config.LLBotPath, port, config.HttpProxy, config.ServerRegion == "china"));
-            if (!started)
+            if (!started.Started)
             {
-                var code = _processManager.GetExitCode(vm.Name);
-                vm.ExitCode = code;
-                Fail(vm, code is null or 0 ? "LLBot 启动失败，请查看日志" : $"LLBot 启动失败 (退出码 {code})，请查看日志");
+                _exitCode = _processManager.ExitCode;
+                Fail(started.Error ?? "LLBot 启动失败，原因不明，请查看终端日志");
                 return;
             }
-            vm.Pid = _processManager.GetPid(vm.Name);
 
-            _instanceGate.Release();
+            _serviceGate.Release();
             gateHeld = false;
 
-            var url = await WaitForWebUiAsync(vm, endpoint.ConnectHost, port);
+            var url = await WaitForWebUiAsync(endpoint.ConnectHost, port);
             // 等待期间被停掉 / 进程自己退出: 状态已由别处填好
-            if (vm.Phase != InstancePhase.Starting) return;
+            if (ServicePhase != ServicePhase.Starting) return;
             if (url == null)
             {
-                await StopQuietlyAsync(vm);
-                Fail(vm, $"等待 WebUI 就绪超时 ({WebUiReadyTimeout.TotalSeconds:0} 秒)，请查看日志");
+                await StopQuietlyAsync();
+                Fail($"等待 WebUI 就绪超时 ({WebUiReadyTimeout.TotalSeconds:0} 秒)。检测结果: {_lastWebUiProbe}");
                 return;
             }
 
-            vm.Url = url;
-            vm.Phase = InstancePhase.Running;
-            _logger.LogInformation("实例 {Instance} 的 WebUI 已就绪: {Url}", vm.Name, url);
+            _url = url;
+            ServicePhase = ServicePhase.Running;
+            _logger.LogInformation("LLBot WebUI 已就绪: {Url}", url);
+            if (Port is int actual && actual != endpoint.Port) await RememberFallbackPortAsync(actual);
 
             if (!_startupCommandDone)
             {
@@ -587,211 +556,173 @@ public class HomeViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "启动实例 {Instance} 时出错", vm.Name);
-            if (vm.Phase == InstancePhase.Starting)
+            _logger.LogError(ex, "启动 LLBot 时出错");
+            if (ServicePhase == ServicePhase.Starting)
             {
-                await StopQuietlyAsync(vm);
-                Fail(vm, $"启动实例时出错: {ex.Message}");
+                await StopQuietlyAsync();
+                Fail($"启动 LLBot 时出错: {ex.Message}");
             }
         }
         finally
         {
-            if (gateHeld) _instanceGate.Release();
+            if (gateHeld) _serviceGate.Release();
         }
     }
 
-    public async Task StopInstanceAsync(InstanceViewModel vm)
+    public async Task StopAsync()
     {
-        if (vm.Phase is not (InstancePhase.Running or InstancePhase.Starting)) return;
-        vm.Phase = InstancePhase.Stopping;
-        _logger.LogInformation("停止实例 {Instance}...", vm.Name);
+        if (ServicePhase is not (ServicePhase.Running or ServicePhase.Starting)) return;
+        ServicePhase = ServicePhase.Stopping;
+        _logger.LogInformation("停止 LLBot...");
         try
         {
             if (ShowLoadingDialog != null)
-                await ShowLoadingDialog($"正在停止实例 {vm.Name}...", () => _processManager.StopInstanceAsync(vm.Name));
+                await ShowLoadingDialog("正在停止 LLBot 及所有实例...", () => _processManager.StopAsync());
             else
-                await _processManager.StopInstanceAsync(vm.Name);
+                await _processManager.StopAsync();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "停止实例 {Instance} 时出错", vm.Name);
+            _logger.LogError(ex, "停止 LLBot 时出错");
         }
-        vm.ExitCode = _processManager.GetExitCode(vm.Name) ?? 0;
-        vm.Url = null;
-        vm.Pid = null;
-        vm.Port = null;
-        vm.Message = "已手动停止";
-        vm.Phase = InstancePhase.Stopped;
+        _exitCode = _processManager.ExitCode ?? 0;
+        _url = null;
+        Port = null;
+        _serviceMessage = "已手动停止";
+        ServicePhase = ServicePhase.Stopped;
     }
 
-    private async Task RestartInstanceAsync(InstanceViewModel vm)
+    private async Task RestartAsync()
     {
-        if (ConfirmDialog != null && !await ConfirmDialog("重启实例", $"确定要重启实例 {vm.Name} 吗？它的登录会话会断开。"))
+        if (ConfirmDialog != null && !await ConfirmDialog("重启 LLBot", "确定要重启 LLBot 吗？所有正在运行的实例都会先停止再重新拉起。"))
             return;
-        await StopInstanceAsync(vm);
-        await StartInstanceAsync(vm);
+        await StopAsync();
+        await StartAsync();
     }
 
-    /// <summary>关于页更新 LLBot 前调用: 停掉所有实例, 记住哪些在跑.</summary>
-    public async Task StopAllForUpdateAsync()
+    /// <summary>关于页更新 LLBot 前调用: 停掉管理进程, 记住更新前是否在跑.</summary>
+    public async Task StopForUpdateAsync()
     {
-        _resumeAfterUpdate = Instances.Where(i => i.IsRunning || i.Phase == InstancePhase.Starting).Select(i => i.Name).ToList();
-        foreach (var vm in Instances.Where(i => i.Phase is InstancePhase.Running or InstancePhase.Starting).ToList())
-            await StopInstanceAsync(vm);
+        _resumeAfterUpdate = ServicePhase is ServicePhase.Running or ServicePhase.Starting;
+        if (_resumeAfterUpdate) await StopAsync();
     }
 
-    /// <summary>关于页更新 LLBot 后调用: 重新过一遍运行环境检查 (版本变了), 再把更新前在跑的实例拉起来.</summary>
+    /// <summary>关于页更新 LLBot 后调用: 重新过一遍运行环境检查 (版本变了), 更新前在跑就拉起来.</summary>
     public async Task ResumeAfterUpdateAsync()
     {
         RuntimePhase = RuntimePhase.Idle;
         if (!await EnsureRuntimeAsync()) return;
-        foreach (var name in _resumeAfterUpdate)
+        if (_resumeAfterUpdate)
         {
-            var vm = Instances.FirstOrDefault(i => i.Name == name);
-            if (vm != null) await StartInstanceAsync(vm);
+            _resumeAfterUpdate = false;
+            await StartAsync();
         }
-        _resumeAfterUpdate = [];
     }
 
-    private async Task NewInstanceAsync()
+    // WebUI 前端自己存登录 cookie 时也是 30 天 (FE/utils/api.ts TOKEN_EXPIRY_DAYS)
+    private static readonly TimeSpan WebUiLoginCookieLifetime = TimeSpan.FromDays(30);
+
+    /// <summary>
+    /// 内嵌 WebView 打开 <paramref name="url"/> 前要预置的统一 WebUI 登录 cookie: 从 data/webui_token.txt 算出来,
+    /// 桌面端里打开 WebUI 不用输密码. 还没设密码或地址不匹配时返回 null.
+    /// </summary>
+    public Controls.WebViewCookie? WebUiLoginCookie(string url)
     {
-        if (ShowTextInputDialog == null) return;
-        var input = await ShowTextInputDialog("新建实例",
-            "实例名只能用字母、数字、_ 和 -，以字母或数字开头，最长 64 个字符。LLBot 会用默认配置创建它。",
-            "例如 bot2");
-        var name = input?.Trim();
-        if (string.IsNullOrEmpty(name)) return;
-
-        if (!LLBotWebUi.IsValidInstanceName(name))
-        {
-            if (ShowAlertDialog != null) await ShowAlertDialog("实例名不合法", "实例名只能用字母、数字、_ 和 -，以字母或数字开头，最长 64 个字符。");
-            return;
-        }
-        if (Instances.Any(i => i.Name == name))
-        {
-            if (ShowAlertDialog != null) await ShowAlertDialog("实例已存在", $"实例 {name} 已经在列表里了。");
-            SelectedInstance = Instances.First(i => i.Name == name);
-            return;
-        }
-
-        var vm = new InstanceViewModel(name);
-        vm.PropertyChanged += OnInstancePropertyChanged;
-        Instances.Add(vm);
-        SelectedInstance = vm;
-        _logger.LogInformation("新建实例 {Instance}", name);
-        // LLBot 第一次以这个实例名启动时会按 default_config.json 建出实例目录
-        await StartInstanceAsync(vm);
+        if (!IsServiceRunning || _url != url || Port is not int port) return null;
+        var cookie = LLBotWebUi.LoginCookie(_config.LLBotPath, port);
+        return cookie is { } c ? new Controls.WebViewCookie(url, c.Name, c.Value, WebUiLoginCookieLifetime) : null;
     }
 
-    private async Task DeleteInstanceAsync(InstanceViewModel vm)
+    private async Task RememberFallbackPortAsync(int port)
     {
-        if (vm.Phase is not (InstancePhase.Stopped or InstancePhase.Failed)) return;
-        var dir = LLBotWebUi.InstanceDir(_config.LLBotPath, vm.Name);
-        if (ConfirmDialog != null && !await ConfirmDialog("删除实例",
-                $"确定删除实例 {vm.Name} 吗？\n\n会删除它的配置目录 {dir}（设置、插件配置与数据、插件数据库、WebUI 密码）。QQ 账号自己的消息数据库在 data/database 下，不会被删。"))
-            return;
-
-        try
-        {
-            if (Directory.Exists(dir)) Directory.Delete(dir, true);
-            var holder = LLBotWebUi.LockHolderPath(_config.LLBotPath, vm.Name);
-            if (File.Exists(holder)) File.Delete(holder);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "删除实例 {Instance} 失败", vm.Name);
-            if (ShowAlertDialog != null) await ShowAlertDialog("删除失败", ex.Message);
-            return;
-        }
-
-        vm.PropertyChanged -= OnInstancePropertyChanged;
-        Instances.Remove(vm);
-        if (vm.IsAutoStart) await SaveAutoStartAsync();
-        SelectedInstance = Instances.FirstOrDefault(i => i.Name == LLBotWebUi.DefaultInstance) ?? Instances.FirstOrDefault();
-        _logger.LogInformation("已删除实例 {Instance}", vm.Name);
+        if (_config.WebUiFallbackPort == port) return;
+        _config.WebUiFallbackPort = port;
+        await _configManager.SetSettingAsync("webui_fallback_port", port);
     }
 
-    private async Task SetAutoStartAsync(InstanceViewModel vm, bool enabled)
+    private void Fail(string message)
     {
-        vm.IsAutoStart = enabled;
-        RaiseDerived();
-        await SaveAutoStartAsync();
+        _logger.LogWarning("LLBot 启动中止: {Message}", message);
+        _serviceMessage = message;
+        _url = null;
+        Port = null;
+        ServicePhase = ServicePhase.Failed;
     }
 
-    private async Task SaveAutoStartAsync()
+    private async Task StopQuietlyAsync()
     {
-        var names = Instances.Where(i => i.IsAutoStart).Select(i => i.Name).ToList();
-        _config.AutoStartInstances = names;
-        await _configManager.SetSettingAsync("auto_start_instances", names);
+        try { await _processManager.StopAsync(); }
+        catch (Exception ex) { _logger.LogWarning(ex, "清理 LLBot 进程失败"); }
     }
 
-    private void Fail(InstanceViewModel vm, string message)
-    {
-        _logger.LogWarning("实例 {Instance} 启动中止: {Message}", vm.Name, message);
-        vm.Message = message;
-        vm.Url = null;
-        vm.Pid = null;
-        vm.Port = null;
-        vm.Phase = InstancePhase.Failed;
-    }
-
-    private async Task StopQuietlyAsync(InstanceViewModel vm)
-    {
-        try { await _processManager.StopInstanceAsync(vm.Name); }
-        catch (Exception ex) { _logger.LogWarning(ex, "清理实例 {Instance} 进程失败", vm.Name); }
-    }
-
-    private void OnProcessStatusChanged(object? sender, InstanceStatusChangedEventArgs e)
+    private void OnProcessStatusChanged(object? sender, ProcessStatusChangedEventArgs e)
     {
         if (e.Status is not (ProcessStatus.Stopped or ProcessStatus.Error)) return;
+        // 主动停止由发起方收尾, 避免重启时旧进程的 Stopped 事件晚到把新进程标成已退出
+        if (e.Requested) return;
         Dispatcher.UIThread.Post(() =>
         {
-            var vm = Instances.FirstOrDefault(i => i.Name == e.Instance);
-            if (vm is { Phase: InstancePhase.Running or InstancePhase.Starting }) MarkExited(vm);
+            if (_processManager.Status is ProcessStatus.Running or ProcessStatus.Starting) return;
+            if (ServicePhase is ServicePhase.Running or ServicePhase.Starting) MarkExited();
         });
     }
 
-    private void MarkExited(InstanceViewModel vm)
+    /// <summary>LLBot 最近的几行输出 (去掉 ANSI 颜色), 失败提示里用.</summary>
+    private string RecentOutput(int lines)
     {
-        var code = _processManager.GetExitCode(vm.Name);
-        vm.ExitCode = code;
-        vm.Message = code is null or 0 ? "LLBot 进程已退出" : $"LLBot 进程异常退出 (退出码 {code})";
-        _logger.LogWarning("实例 {Instance}: {Message}", vm.Name, vm.Message);
-        vm.Url = null;
-        vm.Pid = null;
-        vm.Port = null;
-        vm.Phase = InstancePhase.Stopped;
+        var recent = _logCollector.GetRecentLogs(300)
+            .Where(e => e.ProcessName == ProcessManager.LogSourceName)
+            .Select(e => AnsiEscape.Replace(e.Message, "").TrimEnd())
+            .Where(m => m.Length > 0)
+            .ToList();
+        return string.Join("\n", recent.Skip(Math.Max(0, recent.Count - lines)));
+    }
+
+    private static readonly Regex AnsiEscape = new(@"\x1B\[[0-9;]*[A-Za-z]");
+
+    private void MarkExited()
+    {
+        var code = _processManager.ExitCode;
+        _exitCode = code;
+        var reason = code is null or 0 ? "LLBot 进程已退出" : $"LLBot 进程异常退出 (退出码 {code})";
+        var tail = RecentOutput(5);
+        _serviceMessage = tail.Length == 0 ? reason : $"{reason}，最后的输出:\n{tail}";
+        _logger.LogWarning("LLBot: {Message}", _serviceMessage);
+        _url = null;
+        Port = null;
+        ServicePhase = ServicePhase.Stopped;
     }
 
     // ---- WebUI 就绪 ----
 
-    // 端口能连上还不够: 要确认监听它的就是这个实例的进程 (Windows 查 TCP 表), 别的程序或别的实例占着同一个端口时
-    // 连通探测会被骗. LLBot 拿到 --webui-port 后发现端口被占会自己往后顺延 (旧版本则完全不认这个参数),
-    // 那就在它监听的端口里找带 WebUI 特征的.
-    // 返回 null: 超时, 进程中途退出 (已 MarkExited), 或等待期间实例被停掉.
-    private async Task<string?> WaitForWebUiAsync(InstanceViewModel vm, string host, int port)
+    private string _lastWebUiProbe = string.Empty;
+
+    private async Task<string?> WaitForWebUiAsync(string host, int port)
     {
         var deadline = DateTime.UtcNow + WebUiReadyTimeout;
         var warnedListenerFailure = false;
         var lastProbe = string.Empty;
-        _logger.LogInformation("等待实例 {Instance} 的 WebUI: PID={Pid}, 地址={Url}",
-            vm.Name, _processManager.GetPid(vm.Name), LLBotWebUi.Url(host, port));
+        _logger.LogInformation("等待 LLBot WebUI: PID={Pid}, 地址={Url}",
+            _processManager.Pid, LLBotWebUi.Url(host, port));
         while (DateTime.UtcNow < deadline)
         {
-            if (vm.Phase != InstancePhase.Starting) return null;
-            if (_processManager.GetStatus(vm.Name) != ProcessStatus.Running)
+            if (ServicePhase != ServicePhase.Starting) return null;
+            if (_processManager.Status != ProcessStatus.Running)
             {
-                MarkExited(vm);
+                MarkExited();
                 return null;
             }
 
-            var pid = _processManager.GetPid(vm.Name);
+            var pid = _processManager.Pid;
             var listeners = TcpListenerTable.GetListeners();
-            if (listeners != null && pid is int ownPid)
+            // llbot.js -> llbot-manager.js -> 各实例 llbot-core.js; 网关端口由 llbot-manager.js 监听,
+            // 各实例的内部端口没有 X-Webui-Auth 头, 不会被 IsWebUiAsync 误认
+            var pids = pid is int rootPid ? ProcessTree.WithDescendants(rootPid) : null;
+            if (listeners != null && pids != null)
             {
-                var owned = listeners.Where(l => l.Pid == ownPid).Select(l => l.Port).Distinct().ToList();
+                var owned = listeners.Where(l => pids.Contains(l.Pid)).Select(l => l.Port).Distinct().ToList();
                 var portOwners = listeners.Where(l => l.Port == port).Select(l => l.Pid).Distinct();
-                lastProbe = $"PID={ownPid}, 进程监听端口=[{string.Join(", ", owned)}], 目标端口 {port} 的 PID=[{string.Join(", ", portOwners)}]";
+                lastProbe = $"PID={pid} (进程树 [{string.Join(", ", pids)}]), 进程树监听端口=[{string.Join(", ", owned)}], 目标端口 {port} 的 PID=[{string.Join(", ", portOwners)}]";
             }
             else
             {
@@ -799,35 +730,50 @@ public class HomeViewModel : ViewModelBase
                 if (OperatingSystem.IsWindows() && !warnedListenerFailure)
                 {
                     warnedListenerFailure = true;
-                    _logger.LogWarning("实例 {Instance}: 无法读取 TCP 端口归属，改用本机 WebUI HTTP 特征检测 (PID={Pid}, 端口={Port})",
-                        vm.Name, pid, port);
+                    _logger.LogWarning("无法读取 TCP 端口归属，改用本机 WebUI HTTP 特征检测 (PID={Pid}, 端口={Port})", pid, port);
                 }
             }
-            var readyPort = await LLBotWebUi.FindReadyPortAsync(port, pid, listeners,
+            var readyPort = await LLBotWebUi.FindReadyPortAsync(port, pids, listeners,
                 candidate => LLBotWebUi.IsWebUiAsync(host, candidate));
             if (readyPort is int actualPort)
             {
                 if (actualPort != port)
-                    _logger.LogWarning("实例 {Instance}: LLBot 没有采用分配的端口 {Port}, 实际监听 {Actual}", vm.Name, port, actualPort);
-                vm.Port = actualPort;
+                    _logger.LogWarning("LLBot 没有采用分配的端口 {Port}, 实际监听 {Actual}", port, actualPort);
+                Port = actualPort;
                 return LLBotWebUi.Url(host, actualPort);
             }
 
             await Task.Delay(500);
         }
-        _logger.LogWarning("实例 {Instance} 的 WebUI 就绪检测超时: {Probe}", vm.Name, lastProbe);
+        _logger.LogWarning("LLBot WebUI 就绪检测超时: {Probe}", lastProbe);
+        _lastWebUiProbe = lastProbe;
         return null;
     }
 
     // ---- 运行时准备 ----
 
+    private string? _checkedNodePath;
+    private string? _checkedLLBotPath;
+
+    private async Task<bool> RefreshReadyConfigAsync()
+    {
+        var config = await _configManager.LoadConfigAsync();
+        if (config.NodePath != _checkedNodePath || config.LLBotPath != _checkedLLBotPath)
+        {
+            _logger.LogInformation("Node.js / LLBot 路径已修改, 重新检查运行环境");
+            return false;
+        }
+        _config = config;
+        return true;
+    }
+
     private async Task<bool> EnsureRuntimeAsync()
     {
-        if (RuntimePhase == RuntimePhase.Ready) return true;
+        if (RuntimePhase == RuntimePhase.Ready && await RefreshReadyConfigAsync()) return true;
         await _runtimeGate.WaitAsync();
         try
         {
-            if (RuntimePhase == RuntimePhase.Ready) return true;
+            if (RuntimePhase == RuntimePhase.Ready && await RefreshReadyConfigAsync()) return true;
             RuntimePhase = RuntimePhase.Preparing;
             RuntimeMessage = string.Empty;
             var config = await _configManager.LoadConfigAsync();
@@ -858,8 +804,11 @@ public class HomeViewModel : ViewModelBase
             var versionError = CheckVersionRequirement(config);
             if (versionError != null) return RuntimeFailed(versionError);
 
+            await MigrateLegacyDesktopMultiInstanceAsync(config);
+
+            _checkedNodePath = config.NodePath;
+            _checkedLLBotPath = config.LLBotPath;
             RuntimePhase = RuntimePhase.Ready;
-            LoadInstances();
             return true;
         }
         catch (Exception ex)
@@ -947,7 +896,6 @@ public class HomeViewModel : ViewModelBase
         }
     }
 
-    // 取主版本号 (major). 兼容 "8.0.1" / "v8.0.1" / "8.0.0-beta". 解析不出返回 null.
     private static int? ParseMajorVersion(string? version)
     {
         if (string.IsNullOrWhiteSpace(version)) return null;
@@ -1043,11 +991,11 @@ public class HomeViewModel : ViewModelBase
 
     private void SetWebUiClosed(bool closed)
     {
-        if (SelectedInstance is not { } vm || vm.IsWebUiClosed == closed) return;
-        _logger.LogInformation("{Action} WebUI 页面: 实例 {Name}", closed ? "关闭" : "重新打开", vm.Name);
+        if (IsWebUiClosed == closed) return;
+        _logger.LogInformation("{Action} WebUI 页面", closed ? "关闭" : "重新打开");
         PageError = string.Empty;
         if (closed) ShowTerminal = false;
-        vm.IsWebUiClosed = closed;
+        IsWebUiClosed = closed;
     }
 
     // ---- 更新检查 ----
@@ -1056,38 +1004,23 @@ public class HomeViewModel : ViewModelBase
     {
         try
         {
-            var config = await _configManager.LoadConfigAsync();
             var appVersion = GetAppVersion();
-            var llbotVersion = VersionDetector.DetectLLBotVersion(config.LLBotPath, _logger);
-
-            var updateNames = new List<string>();
             var state = new UpdateState { IsChecked = true };
 
             var appUpdate = await _updateChecker.CheckAppUpdateAsync(appVersion);
             if (appUpdate.HasUpdate)
             {
-                updateNames.Add("管理器");
                 state.AppHasUpdate = true;
                 state.AppLatestVersion = appUpdate.LatestVersion;
                 state.AppReleaseUrl = appUpdate.ReleaseUrl;
                 _logger.LogInformation("发现管理器新版本: {Version}", appUpdate.LatestVersion);
             }
-
-            if (!string.IsNullOrEmpty(llbotVersion))
+            else
             {
-                var llbotUpdate = await _updateChecker.CheckLLBotUpdateAsync(llbotVersion);
-                if (llbotUpdate.HasUpdate)
-                {
-                    updateNames.Add("LLBot");
-                    state.LLBotHasUpdate = true;
-                    state.LLBotLatestVersion = llbotUpdate.LatestVersion;
-                    state.LLBotReleaseUrl = llbotUpdate.ReleaseUrl;
-                    _logger.LogInformation("发现 LLBot 新版本: {Version}", llbotUpdate.LatestVersion);
-                }
+                _logger.LogInformation("管理器已是最新版本");
             }
 
             _updateStateService.UpdateState(state);
-            if (updateNames.Count == 0) _logger.LogInformation("所有组件已是最新版本");
         }
         catch (Exception ex)
         {
@@ -1099,10 +1032,9 @@ public class HomeViewModel : ViewModelBase
     {
         HasUpdate = state.HasAnyUpdate;
         if (!state.HasAnyUpdate) return;
-        var names = new List<string>();
-        if (state.AppHasUpdate) names.Add("管理器");
-        if (state.LLBotHasUpdate) names.Add("LLBot");
-        UpdateBannerText = $"发现新版本: {string.Join(", ", names)}";
+        UpdateBannerText = string.IsNullOrEmpty(state.AppLatestVersion)
+            ? "发现管理器新版本"
+            : $"发现管理器新版本: {state.AppLatestVersion}";
     }
 
     private static string GetAppVersion()

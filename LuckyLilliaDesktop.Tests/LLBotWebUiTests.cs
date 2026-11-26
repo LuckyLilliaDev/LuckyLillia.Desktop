@@ -1,3 +1,4 @@
+using System.Text.Json;
 using LuckyLilliaDesktop.Utils;
 using Xunit;
 
@@ -6,43 +7,50 @@ namespace LuckyLilliaDesktop.Tests;
 public class LLBotWebUiTests
 {
     [Theory]
+    [InlineData("default", true)]
+    [InlineData("bot-2_x", true)]
+    [InlineData("123456789", true)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    [InlineData("-abc", false)]
+    [InlineData("_abc", false)]
+    [InlineData("中文", false)]
+    [InlineData("a b", false)]
+    [InlineData("a/b", false)]
+    public void IsValidInstanceName_follows_llbot_rule(string? name, bool expected)
+    {
+        Assert.Equal(expected, LLBotWebUi.IsValidInstanceName(name));
+    }
+
+    [Fact]
+    public void IsValidInstanceName_rejects_names_longer_than_64()
+    {
+        Assert.True(LLBotWebUi.IsValidInstanceName(new string('a', 64)));
+        Assert.False(LLBotWebUi.IsValidInstanceName(new string('a', 65)));
+    }
+
+    [Fact]
+    public void ParseManagerGateway_reads_gateway_section()
+    {
+        var endpoint = LLBotWebUi.ParseManagerGateway("""{"gateway":{"host":"0.0.0.0","port":4080},"instances":{}}""");
+
+        Assert.Equal(new WebUiEndpoint(true, "0.0.0.0", 4080), endpoint);
+        Assert.Equal("http://127.0.0.1:4080", endpoint!.Url);
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
-    [InlineData("   ")]
-    public void ResolveInstanceName_blank_means_default(string? configured)
+    [InlineData("not json")]
+    [InlineData("{}")]
+    [InlineData("""{"gateway":"bad"}""")]
+    public void ParseManagerGateway_returns_null_when_missing_or_invalid(string? json)
     {
-        Assert.Equal("default", LLBotWebUi.ResolveInstanceName(configured));
-    }
-
-    [Theory]
-    [InlineData("bot-2")]
-    [InlineData("123456789")]
-    [InlineData("a_b")]
-    public void ResolveInstanceName_keeps_valid_names_trimmed(string name)
-    {
-        Assert.Equal(name, LLBotWebUi.ResolveInstanceName($" {name} "));
-    }
-
-    [Theory]
-    [InlineData("-abc")]
-    [InlineData("_abc")]
-    [InlineData("中文")]
-    [InlineData("a b")]
-    [InlineData("a/b")]
-    public void ResolveInstanceName_rejects_names_llbot_would_refuse(string name)
-    {
-        Assert.Null(LLBotWebUi.ResolveInstanceName(name));
+        Assert.Null(LLBotWebUi.ParseManagerGateway(json));
     }
 
     [Fact]
-    public void ResolveInstanceName_rejects_names_longer_than_64()
-    {
-        Assert.Equal(new string('a', 64), LLBotWebUi.ResolveInstanceName(new string('a', 64)));
-        Assert.Null(LLBotWebUi.ResolveInstanceName(new string('a', 65)));
-    }
-
-    [Fact]
-    public void ParseEndpoint_reads_webui_section()
+    public void ParseEndpoint_reads_legacy_webui_section()
     {
         var endpoint = LLBotWebUi.ParseEndpoint("""{"webui":{"enable":true,"host":"0.0.0.0","port":4080},"log":true}""");
 
@@ -72,13 +80,6 @@ public class LLBotWebUiTests
         Assert.Equal(3080, LLBotWebUi.ParseEndpoint(json).Port);
     }
 
-    [Fact]
-    public void ParseEndpoint_reports_disabled_webui()
-    {
-        Assert.False(LLBotWebUi.ParseEndpoint("""{"webui":{"enable":false}}""").Enabled);
-        Assert.True(LLBotWebUi.ParseEndpoint("""{"webui":{"port":3081}}""").Enabled);
-    }
-
     [Theory]
     [InlineData("", "127.0.0.1")]
     [InlineData("0.0.0.0", "127.0.0.1")]
@@ -100,61 +101,91 @@ public class LLBotWebUiTests
     }
 
     [Fact]
-    public void SettingsPath_is_under_the_instance_directory()
+    public void ReadGatewayEndpoint_prefers_manager_json_and_falls_back_to_legacy_default_settings()
     {
-        var path = LLBotWebUi.SettingsPath(Path.Combine("bin", "llbot", "llbot.js"), "default");
-
-        Assert.True(Path.IsPathRooted(path));
-        Assert.EndsWith(Path.Combine("bin", "llbot", "data", "instances", "default", "settings.json"), path);
-    }
-
-    [Theory]
-    [InlineData("default", true)]
-    [InlineData("bot-2_x", true)]
-    [InlineData("", false)]
-    [InlineData(null, false)]
-    [InlineData("-abc", false)]
-    [InlineData("a/b", false)]
-    public void IsValidInstanceName_follows_llbot_rule(string? name, bool expected)
-    {
-        Assert.Equal(expected, LLBotWebUi.IsValidInstanceName(name));
-    }
-
-    [Fact]
-    public void Instance_paths_follow_llbot_data_layout()
-    {
-        var script = Path.Combine(Path.GetTempPath(), "llbot-layout", "llbot.js");
-        var root = Path.GetDirectoryName(script)!;
-
-        Assert.Equal(Path.Combine(root, "data", "instances"), LLBotWebUi.InstancesDir(script));
-        Assert.Equal(Path.Combine(root, "data", "instances", "bot2"), LLBotWebUi.InstanceDir(script, "bot2"));
-        Assert.Equal(Path.Combine(root, "data", "state", "instances", "bot2.json"), LLBotWebUi.LockHolderPath(script, "bot2"));
-    }
-
-    [Fact]
-    public void ListInstances_is_empty_when_the_directory_does_not_exist()
-    {
-        var script = Path.Combine(Path.GetTempPath(), "llbot-missing-" + Guid.NewGuid().ToString("N"), "llbot.js");
-        Assert.Empty(LLBotWebUi.ListInstances(script));
-    }
-
-    [Fact]
-    public void ListInstances_keeps_valid_names_with_default_first()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "llbot-list-" + Guid.NewGuid().ToString("N"));
-        var instances = Path.Combine(root, "data", "instances");
-        foreach (var name in new[] { "zeta", "default", "alpha", "-bad", "中文", "ok_1" })
-            Directory.CreateDirectory(Path.Combine(instances, name));
-        // 文件不是实例
-        File.WriteAllText(Path.Combine(instances, "notes"), "");
+        var root = Path.Combine(Path.GetTempPath(), "llbot-gateway-" + Guid.NewGuid().ToString("N"));
+        var script = Path.Combine(root, "llbot.js");
         try
         {
-            var list = LLBotWebUi.ListInstances(Path.Combine(root, "llbot.js"));
-            Assert.Equal(new[] { "default", "alpha", "ok_1", "zeta" }, list);
+            Assert.Equal(LLBotWebUi.DefaultEndpoint, LLBotWebUi.ReadGatewayEndpoint(script));
+
+            var legacyDir = Path.GetDirectoryName(LLBotWebUi.LegacyDefaultSettingsPath(script))!;
+            Directory.CreateDirectory(legacyDir);
+            File.WriteAllText(LLBotWebUi.LegacyDefaultSettingsPath(script), """{"webui":{"enable":false,"host":"0.0.0.0","port":3099}}""");
+            Assert.Equal(new WebUiEndpoint(true, "0.0.0.0", 3099), LLBotWebUi.ReadGatewayEndpoint(script));
+
+            File.WriteAllText(LLBotWebUi.ManagerConfigPath(script), """{"gateway":{"host":"127.0.0.1","port":4100},"instances":{}}""");
+            Assert.Equal(new WebUiEndpoint(true, "127.0.0.1", 4100), LLBotWebUi.ReadGatewayEndpoint(script));
         }
         finally
         {
-            Directory.Delete(root, true);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void LoginCookie_reads_unified_token_file_and_falls_back_to_legacy_default_token()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "llbot-cookie-" + Guid.NewGuid().ToString("N"));
+        var script = Path.Combine(root, "llbot.js");
+        try
+        {
+            Assert.Null(LLBotWebUi.LoginCookie(script, 3080));
+
+            // Legacy default token fallback before manager migration runs
+            var legacyPath = LLBotWebUi.LegacyDefaultTokenPath(script);
+            Directory.CreateDirectory(Path.GetDirectoryName(legacyPath)!);
+            File.WriteAllText(legacyPath, "  abc\r\n");
+            var legacyCookie = LLBotWebUi.LoginCookie(script, 11745);
+            Assert.NotNull(legacyCookie);
+            Assert.Equal("webui_token_11745", legacyCookie.Value.Name);
+            Assert.Equal("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", legacyCookie.Value.Value);
+
+            // Unified data/webui_token.txt wins over legacy
+            File.WriteAllText(LLBotWebUi.WebUiTokenPath(script), "xyz");
+            var unifiedCookie = LLBotWebUi.LoginCookie(script, 3080);
+            Assert.NotNull(unifiedCookie);
+            Assert.Equal("webui_token_3080", unifiedCookie.Value.Name);
+            Assert.NotEqual(legacyCookie.Value.Value, unifiedCookie.Value.Value);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void MigrateAutoStartToManagerJson_writes_once_and_does_not_overwrite_existing()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "llbot-migrate-" + Guid.NewGuid().ToString("N"));
+        var script = Path.Combine(root, "llbot.js");
+        try
+        {
+            // Plain ["default"] matches manager's default behavior -> no need to pre-create manager.json
+            Assert.False(LLBotWebUi.MigrateAutoStartToManagerJson(script, ["default"]));
+            Assert.False(File.Exists(LLBotWebUi.ManagerConfigPath(script)));
+
+            // Multi-instance dev list migrates into data/manager.json preserving legacy gateway port
+            var legacySettings = LLBotWebUi.LegacyDefaultSettingsPath(script);
+            Directory.CreateDirectory(Path.GetDirectoryName(legacySettings)!);
+            File.WriteAllText(legacySettings, """{"webui":{"host":"0.0.0.0","port":3088}}""");
+
+            Assert.True(LLBotWebUi.MigrateAutoStartToManagerJson(script, ["default", "bot2", "-bad"]));
+            Assert.True(File.Exists(LLBotWebUi.ManagerConfigPath(script)));
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(LLBotWebUi.ManagerConfigPath(script)));
+            Assert.Equal("0.0.0.0", doc.RootElement.GetProperty("gateway").GetProperty("host").GetString());
+            Assert.Equal(3088, doc.RootElement.GetProperty("gateway").GetProperty("port").GetInt32());
+            Assert.True(doc.RootElement.GetProperty("instances").GetProperty("default").GetProperty("autostart").GetBoolean());
+            Assert.True(doc.RootElement.GetProperty("instances").GetProperty("bot2").GetProperty("autostart").GetBoolean());
+            Assert.False(doc.RootElement.GetProperty("instances").TryGetProperty("-bad", out _));
+
+            // Does not overwrite an existing manager.json
+            Assert.False(LLBotWebUi.MigrateAutoStartToManagerJson(script, ["bot3"]));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }
 }

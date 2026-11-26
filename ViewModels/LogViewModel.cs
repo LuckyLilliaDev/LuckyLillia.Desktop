@@ -20,8 +20,15 @@ public class LogEntryViewModel : ViewModelBase
     {
         get
         {
-            // 视图已按实例过滤, 不再带 [实例名] 前缀
-            return SanitizeText($"{LogEntry.Timestamp:MM-dd HH:mm:ss} {LogEntry.Message}", preserveAnsi: true);
+            // 所有实例和 Desktop 自己的日志混在一起显示, 前面带来源; Desktop 的警告 / 错误级别标黄 / 标红
+            var entry = LogEntry;
+            var level = entry.ProcessName != LogCollectorSink.DesktopSource ? string.Empty : entry.Level switch
+            {
+                "WRN" => "\x1B[33mWRN\x1B[0m ",
+                "ERR" or "FTL" => $"\x1B[31m{entry.Level}\x1B[0m ",
+                _ => string.Empty,
+            };
+            return SanitizeText($"{entry.Timestamp:MM-dd HH:mm:ss} [{entry.ProcessName}] {level}{entry.Message}", preserveAnsi: true);
         }
     }
 
@@ -93,21 +100,9 @@ public class LogViewModel : ViewModelBase, IDisposable
     public event Action? ScrollToBottomRequested;
     public event Action? ClearSelectionRequested;
 
-    // 只看这一个实例 (LogEntry.ProcessName) 的输出; null 时什么都不显示
-    private string? _instance;
-    public string? Instance
-    {
-        get => _instance;
-        set
-        {
-            if (_instance == value) return;
-            this.RaiseAndSetIfChanged(ref _instance, value);
-            this.RaisePropertyChanged(nameof(Title));
-            RefreshRecentLogs();
-        }
-    }
+    private const int MaxLogs = 1000;
 
-    public string Title => Instance == null ? "终端日志" : $"终端日志 · {Instance}";
+    public string Title => "终端日志";
 
     public void ScrollToBottom() => ScrollToBottomRequested?.Invoke();
 
@@ -134,6 +129,8 @@ public class LogViewModel : ViewModelBase, IDisposable
         _logCollector = logCollector;
         _logger = logger;
 
+        // 先补上已有的 (启动日志、已在跑的实例), 再订阅新的
+        RefreshRecentLogs();
         _logSubscription = _logCollector.LogStream
             .Buffer(TimeSpan.FromMilliseconds(200))
             .Where(batch => batch.Count > 0)
@@ -148,7 +145,7 @@ public class LogViewModel : ViewModelBase, IDisposable
         ClearLogsCommand = ReactiveCommand.Create(() =>
         {
             LogEntries.Clear();
-            _logCollector.ClearLogs(Instance);
+            _logCollector.ClearLogs();
         }, outputScheduler: AvaloniaUiScheduler.Instance);
 
         CopySelectedCommand = ReactiveCommand.CreateFromTask(async () =>
@@ -182,19 +179,14 @@ public class LogViewModel : ViewModelBase, IDisposable
 
     private void OnLogBatchReceived(System.Collections.Generic.IList<LogEntry> batch)
     {
-        if (_isUIUpdatesPaused || Instance == null) return;
+        if (_isUIUpdatesPaused) return;
 
-        var added = false;
         foreach (var logEntry in batch)
         {
-            if (logEntry.ProcessName != Instance) continue;
             LogEntries.Add(new LogEntryViewModel(logEntry));
-            added = true;
         }
-        if (!added) return;
 
-        const int maxLogs = 500;
-        while (LogEntries.Count > maxLogs)
+        while (LogEntries.Count > MaxLogs)
         {
             LogEntries.RemoveAt(0);
         }
@@ -230,11 +222,9 @@ public class LogViewModel : ViewModelBase, IDisposable
     private void RefreshRecentLogs()
     {
         LogEntries.Clear();
-        if (Instance == null) return;
-        // 收集器的缓冲是所有实例共用的, 先取全部再按实例挑
-        foreach (var log in _logCollector.GetRecentLogs(1000))
+        foreach (var log in _logCollector.GetRecentLogs(MaxLogs))
         {
-            if (log.ProcessName == Instance) LogEntries.Add(new LogEntryViewModel(log));
+            LogEntries.Add(new LogEntryViewModel(log));
         }
         
         if (AutoScroll)

@@ -12,13 +12,48 @@ public class WebUiProbeCollection { }
 [Collection("WebUI HTTP probe")]
 public class LLBotWebUiProbeTests
 {
+    private static readonly IReadOnlySet<int> Own = new HashSet<int> { 12345 };
+
+    [Fact]
+    public async Task A_port_owned_by_a_child_process_of_the_instance_is_ready()
+    {
+        // LLBot 9: llbot.js (12345) 拉起 llbot-core.js (23456), 由子进程监听 WebUI 端口
+        var tree = new HashSet<int> { 12345, 23456 };
+        var listeners = new[] { new TcpListenerTable.Listener(11745, 23456) };
+        var ready = await LLBotWebUi.FindReadyPortAsync(11745, tree, listeners,
+            _ => throw new InvalidOperationException("HTTP probe should not be needed"));
+        Assert.Equal(11745, ready);
+    }
+
+    [Fact]
+    public void The_process_tree_contains_the_root_and_a_spawned_child()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var self = System.Diagnostics.Process.GetCurrentProcess();
+        using var child = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c ping -n 5 127.0.0.1 >nul")
+        {
+            CreateNoWindow = true,
+            UseShellExecute = false,
+        })!;
+        try
+        {
+            var tree = ProcessTree.WithDescendants(self.Id);
+            Assert.Contains(self.Id, tree);
+            Assert.Contains(child.Id, tree);
+        }
+        finally
+        {
+            try { child.Kill(true); } catch { }
+        }
+    }
+
     [Fact]
     public async Task A_failed_Windows_table_read_falls_back_to_the_reachable_WebUI()
     {
         uint FailedRead(nint buffer, ref uint size, uint family) => 5;
         var listeners = TcpListenerTable.GetListeners(FailedRead);
         await using var server = new ResponseServer("403 Forbidden", "X-Webui-Auth: required\r\n");
-        var ready = await LLBotWebUi.FindReadyPortAsync(server.Port, 12345, listeners,
+        var ready = await LLBotWebUi.FindReadyPortAsync(server.Port, Own, listeners,
             port => LLBotWebUi.IsWebUiAsync("127.0.0.1", port));
         Assert.Equal(server.Port, ready);
         Assert.Equal(1, server.Requests);
@@ -28,7 +63,7 @@ public class LLBotWebUiProbeTests
     public async Task A_port_owned_by_the_instance_is_ready_without_HTTP()
     {
         var listeners = new[] { new TcpListenerTable.Listener(3080, 12345) };
-        var ready = await LLBotWebUi.FindReadyPortAsync(3080, 12345, listeners,
+        var ready = await LLBotWebUi.FindReadyPortAsync(3080, Own, listeners,
             _ => throw new InvalidOperationException("HTTP probe should not be needed"));
         Assert.Equal(3080, ready);
     }
@@ -37,7 +72,7 @@ public class LLBotWebUiProbeTests
     public async Task Does_not_accept_another_process_on_the_requested_port()
     {
         var listeners = new[] { new TcpListenerTable.Listener(3080, 99999) };
-        var ready = await LLBotWebUi.FindReadyPortAsync(3080, 12345, listeners,
+        var ready = await LLBotWebUi.FindReadyPortAsync(3080, Own, listeners,
             _ => throw new InvalidOperationException("Must not probe the other process"));
         Assert.Null(ready);
     }
@@ -45,7 +80,7 @@ public class LLBotWebUiProbeTests
     [Fact]
     public async Task A_successful_empty_table_keeps_waiting_for_the_instance_to_listen()
     {
-        var ready = await LLBotWebUi.FindReadyPortAsync(3080, 12345, Array.Empty<TcpListenerTable.Listener>(),
+        var ready = await LLBotWebUi.FindReadyPortAsync(3080, Own, Array.Empty<TcpListenerTable.Listener>(),
             _ => throw new InvalidOperationException("An empty table is not a failed read"));
         Assert.Null(ready);
     }
@@ -55,7 +90,7 @@ public class LLBotWebUiProbeTests
     {
         var listeners = new[] { new TcpListenerTable.Listener(3080, 99999), new TcpListenerTable.Listener(3081, 12345) };
         var probed = new List<int>();
-        var ready = await LLBotWebUi.FindReadyPortAsync(3080, 12345, listeners, port =>
+        var ready = await LLBotWebUi.FindReadyPortAsync(3080, Own, listeners, port =>
         {
             probed.Add(port);
             return Task.FromResult(true);

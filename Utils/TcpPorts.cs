@@ -35,7 +35,9 @@ public static class TcpPorts
         }
     }
 
-    /// <summary>从首选端口起往上找第一个空闲且不在 <paramref name="exclude"/> 里的端口; 找不到返回 null.</summary>
+    /// <summary>
+    /// 从首选端口起往上找第一个空闲且不在 <paramref name="exclude"/> 里的端口; 范围内都不行就让系统分配一个; 都失败返回 null.
+    /// </summary>
     public static int? FindFree(int preferred, ISet<int>? exclude = null, int range = 100)
     {
         var listeners = TcpListenerTable.GetListeners();
@@ -45,6 +47,29 @@ public static class TcpPorts
             if (exclude != null && exclude.Contains(port)) continue;
             if (IsFree(port, listeners)) return port;
         }
+        // Hyper-V / WSL / Docker 会按 100 个一段保留端口 (netsh int ipv4 show excludedportrange), 一段就能盖住整个搜索范围
+        // (实际遇到: 3080 被占, 3081-3180 被保留). 系统分配的端口不会落在保留段里
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            var port = SystemAssignedPort();
+            if (port is int p && (exclude == null || !exclude.Contains(p)) && IsFree(p, listeners)) return p;
+        }
         return null;
+    }
+
+    private static int? SystemAssignedPort()
+    {
+        try
+        {
+            using var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+            return port;
+        }
+        catch (SocketException)
+        {
+            return null;
+        }
     }
 }
